@@ -1,0 +1,42 @@
+# Senders to prune aggressively from Promotions/Updates/Social, regardless
+# of how low-engagement they normally are.
+#
+# Copy this file to noisy_senders.txt (gitignored — never committed) and
+# replace the examples below with addresses from your own mailbox.
+#
+# Lines come in two forms:
+#
+#   address
+#       Lowercase email address, one per line. prune.sh's "Noisy senders
+#       (low engagement)" category trashes mail from these addresses, once
+#       it's older than NOISY_AGE (default 30d), as long as it's:
+#         - in category:promotions, category:updates, or category:social
+#           (the same scope find_noisy_senders.sh samples from), and
+#         - not starred/important/Reference-labeled, from a Contact, or in
+#           a thread you've replied to.
+#
+#   address<TAB>keyword1,keyword2,...
+#       Use this for a sender that ALSO sends mail worth keeping under the
+#       same address (e.g. a bank that sends both marketing and account
+#       statements). prune.sh gives this address its own category, adding
+#       -subject:(keyword1 OR keyword2 OR ...) to the query above — so
+#       anything with one of these words/phrases in the subject is left
+#       alone no matter how noisy the sender otherwise is. Keywords with
+#       spaces (e.g. payment due) are matched as phrases automatically — do
+#       not add your own quotes. The address and keyword list must be
+#       separated by a literal tab character.
+#
+# Blank lines and lines starting with # are ignored.
+#
+# Populate this by running:
+#   ./scripts/find_noisy_senders.sh
+# and reviewing the report it prints — add addresses you recognize as safe
+# to aggressively prune (newsletters/promos you never read, etc.). If a
+# sender also sends something worth keeping, either add a subject-exclusion
+# list here, or (better, if the pattern applies mailbox-wide) add a rule to
+# scripts/label_reference.sh so it gets the Reference label proactively.
+#
+# Examples (dummy data — remove and replace with your own):
+deals@example-store.com
+newsletter@example-news.com
+notifications@examplebank.com	statement,payment due

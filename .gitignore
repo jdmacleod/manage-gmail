@@ -1,0 +1,26 @@
+# Personal data and local state — never commit these. Each has a
+# .example counterpart with dummy data showing the expected format.
+
+# Your Google Contacts export (scripts/export_contacts.sh) — real email
+# addresses of everyone you've ever emailed.
+/contacts_emails.txt
+
+# Senders you've curated as safe to prune aggressively — real addresses.
+/noisy_senders.txt
+
+# Per-message audit trail (timestamps, senders, subjects, message IDs).
+/audit_log.jsonl
+
+# Running history of prune/rescue/label runs (queries, counts, dates).
+/PRUNE_LOG.md
+
+# Timestamp marker written by label_reference.sh.
+/.label_reference_last_run
+
+# Personal scratch notes (setup notes, personal queries) — not part of
+# the toolkit.
+/NOTES.md
+
+# Personal "keep" rules (specific people/services for rescue.sh and
+# label_reference.sh) — see config/keep_rules.local.example.tsv.
+/config/keep_rules.local.tsv

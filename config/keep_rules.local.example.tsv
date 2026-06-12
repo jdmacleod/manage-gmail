@@ -1,0 +1,22 @@
+# Personal "keep" rules for rescue.sh and label_reference.sh.
+#
+# Copy this file to keep_rules.local.tsv (gitignored — never committed) and
+# edit it to match senders/subjects specific to your own mailbox: specific
+# people, organizations, or services you always want rescued from Trash and
+# proactively labeled Reference, regardless of age.
+#
+# Format: name<TAB>core query fragment, one per line. The name is used for
+# the Audit/Rescued/<name> label and PRUNE_LOG.md entries; the query
+# fragment is a Gmail search fragment with NO in:trash and NO
+# -label:Reference — both scripts add those automatically:
+#   rescue.sh:           in:trash <core>
+#   label_reference.sh:  <core> -label:Reference -in:trash
+#
+# Blank lines and lines starting with # are ignored. The name and query
+# fragment must be separated by a literal tab character.
+#
+# Examples (replace with your own):
+# Alma mater president emails	from:president@example.edu
+# Family member	from:relative@example.com
+# Ride-share receipts	from:receipts@example-rideshare.com
+# Event invitations	from:noreply@example-events.com
