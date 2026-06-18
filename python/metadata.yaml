@@ -1,0 +1,255 @@
+# Datasette configuration for the Gmail mbox SQLite database.
+#
+# Usage (from the python/ directory):
+#   uv run datasette serve gmail.db --metadata metadata.yaml --open
+#
+# The "canned_queries" section pre-loads useful queries into Datasette's
+# Query menu.  Edit freely — changes take effect on the next page load
+# (no server restart needed in Datasette 0.64+).
+#
+# To add a saved query: duplicate any block below, give it a unique key
+# (the YAML key becomes the URL slug), and set title + sql.
+#
+# datasette-vega is installed as a dependency and adds a "Vega" chart tab
+# to any query result.  Select a query, click Vega, pick chart type and axes.
+
+title: Gmail Archive
+description_html: >
+  Gmail Takeout mbox imported with
+  <a href="https://github.com/your-repo/manage-gmail">manage-gmail</a>.
+  Use the Query menu for pre-built analyses, or write your own SQL.
+
+databases:
+  gmail:
+    tables:
+      messages:
+        sort_desc: true
+        sort: date_ts
+        # Columns shown by default in the table view; technical columns are
+        # hidden (still accessible via SQL and the full row view).
+        hidden_columns:
+          - headers_json
+          - mbox_offset
+          - mbox_size
+          - references_hdr
+          - x_received
+          - bcc_raw
+          - delivered_to
+          - content_type
+        # Facets let you filter the table by clicking a value.
+        facets:
+          - year_month
+          - from_email
+          - is_unread
+          - is_starred
+          - in_inbox
+          - in_sent
+          - in_trash
+          - has_attachments
+        label_column: subject
+
+    canned_queries:
+
+      # -----------------------------------------------------------------------
+      # Volume / overview
+      # -----------------------------------------------------------------------
+
+      by_month:
+        title: "Message volume by month"
+        sql: |
+          SELECT
+            year_month,
+            COUNT(*)                                            AS total,
+            SUM(is_unread)                                      AS unread,
+            SUM(is_starred)                                     AS starred,
+            SUM(CASE WHEN in_inbox = 1 THEN 1 ELSE 0 END)     AS inbox,
+            SUM(CASE WHEN in_sent  = 1 THEN 1 ELSE 0 END)     AS sent,
+            SUM(has_attachments)                                AS with_attachments
+          FROM   messages
+          WHERE  year_month IS NOT NULL
+          GROUP  BY year_month
+          ORDER  BY year_month DESC
+
+      by_year:
+        title: "Message volume by year"
+        sql: |
+          SELECT
+            year,
+            COUNT(*)                                            AS total,
+            SUM(is_unread)                                      AS unread,
+            SUM(is_starred)                                     AS starred,
+            SUM(CASE WHEN in_inbox = 1 THEN 1 ELSE 0 END)     AS inbox,
+            SUM(CASE WHEN in_sent  = 1 THEN 1 ELSE 0 END)     AS sent,
+            SUM(has_attachments)                                AS with_attachments
+          FROM   messages
+          WHERE  year IS NOT NULL
+          GROUP  BY year
+          ORDER  BY year DESC
+
+      # -----------------------------------------------------------------------
+      # Senders
+      # -----------------------------------------------------------------------
+
+      top_senders:
+        title: "Top senders by message count"
+        sql: |
+          SELECT
+            from_email,
+            from_name,
+            COUNT(*)                                            AS message_count,
+            SUM(is_unread)                                      AS unread,
+            SUM(is_starred)                                     AS starred,
+            datetime(MIN(date_ts), 'unixepoch')                AS first_seen,
+            datetime(MAX(date_ts), 'unixepoch')                AS last_seen
+          FROM   messages
+          WHERE  from_email IS NOT NULL
+          GROUP  BY from_email
+          ORDER  BY message_count DESC
+          LIMIT  200
+
+      top_senders_inbox:
+        title: "Top senders in Inbox"
+        sql: |
+          SELECT
+            from_email,
+            from_name,
+            COUNT(*)                                            AS message_count,
+            SUM(is_unread)                                      AS unread,
+            datetime(MAX(date_ts), 'unixepoch')                AS last_message
+          FROM   messages
+          WHERE  in_inbox = 1 AND from_email IS NOT NULL
+          GROUP  BY from_email
+          ORDER  BY message_count DESC
+          LIMIT  200
+
+      # -----------------------------------------------------------------------
+      # Inbox / flags
+      # -----------------------------------------------------------------------
+
+      unread_inbox:
+        title: "Unread inbox messages (newest first)"
+        sql: |
+          SELECT
+            datetime(date_ts, 'unixepoch')  AS date,
+            from_email,
+            from_name,
+            subject,
+            labels,
+            message_id
+          FROM   messages
+          WHERE  in_inbox = 1 AND is_unread = 1
+          ORDER  BY date_ts DESC
+          LIMIT  500
+
+      starred:
+        title: "Starred messages"
+        sql: |
+          SELECT
+            datetime(date_ts, 'unixepoch')  AS date,
+            from_email,
+            subject,
+            labels,
+            message_id
+          FROM   messages
+          WHERE  is_starred = 1
+          ORDER  BY date_ts DESC
+          LIMIT  500
+
+      # -----------------------------------------------------------------------
+      # Threads
+      # -----------------------------------------------------------------------
+
+      busiest_threads:
+        title: "Most active threads (by message count)"
+        sql: |
+          SELECT
+            thread_id,
+            COUNT(*)                                            AS message_count,
+            datetime(MIN(date_ts), 'unixepoch')                AS started,
+            datetime(MAX(date_ts), 'unixepoch')                AS last_message,
+            COUNT(DISTINCT from_email)                          AS participants,
+            MAX(subject)                                        AS subject
+          FROM   messages
+          WHERE  thread_id IS NOT NULL
+          GROUP  BY thread_id
+          ORDER  BY message_count DESC
+          LIMIT  100
+
+      # -----------------------------------------------------------------------
+      # Size / attachments
+      # -----------------------------------------------------------------------
+
+      largest_messages:
+        title: "Largest messages (by raw mbox size)"
+        sql: |
+          SELECT
+            datetime(date_ts, 'unixepoch')  AS date,
+            from_email,
+            subject,
+            printf('%.1f MB', body_size_bytes / 1048576.0)     AS size,
+            body_size_bytes,
+            has_attachments,
+            attachment_names,
+            message_id
+          FROM   messages
+          ORDER  BY body_size_bytes DESC
+          LIMIT  100
+
+      with_attachments:
+        title: "Messages with attachments (newest first)"
+        sql: |
+          SELECT
+            datetime(date_ts, 'unixepoch')  AS date,
+            from_email,
+            subject,
+            attachment_names,
+            printf('%.1f MB', body_size_bytes / 1048576.0)     AS size,
+            message_id
+          FROM   messages
+          WHERE  has_attachments = 1
+          ORDER  BY date_ts DESC
+          LIMIT  500
+
+      # -----------------------------------------------------------------------
+      # Sent mail
+      # -----------------------------------------------------------------------
+
+      top_recipients:
+        title: "Most-emailed recipients (from Sent)"
+        sql: |
+          SELECT
+            to_raw,
+            COUNT(*)                                            AS sent_count,
+            datetime(MAX(date_ts), 'unixepoch')                AS last_sent
+          FROM   messages
+          WHERE  in_sent = 1 AND to_raw IS NOT NULL
+          GROUP  BY to_raw
+          ORDER  BY sent_count DESC
+          LIMIT  100
+
+      # -----------------------------------------------------------------------
+      # Import health
+      # -----------------------------------------------------------------------
+
+      import_summary:
+        title: "Import progress / status"
+        sql: |
+          SELECT
+            mbox_path,
+            printf('%.2f GB', mbox_size_bytes / 1073741824.0)  AS mbox_size,
+            messages_imported,
+            printf('%.1f%%', last_offset * 100.0 / mbox_size_bytes) AS pct_done,
+            started_at,
+            updated_at,
+            COALESCE(completed_at, '(in progress)')            AS completed_at
+          FROM   import_progress
+          ORDER  BY id DESC
+
+      messages_without_date:
+        title: "Messages with unparseable Date headers"
+        sql: |
+          SELECT message_id, from_email, subject, date_str, mbox_offset
+          FROM   messages
+          WHERE  date_ts IS NULL
+          ORDER  BY mbox_offset
+          LIMIT  200

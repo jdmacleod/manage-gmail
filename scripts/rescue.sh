@@ -79,6 +79,7 @@ finish_category() {
   local elapsed=$(( $(date +%s) - cat_start_ts ))
   echo "Category runtime: $(fmt_duration "$elapsed")"
   if [[ "$DRY_RUN" == "false" ]]; then
+    # shellcheck disable=SC2016  # backticks are Markdown code spans in the log format
     printf -- '- %s — **%s** (rescue) — query: `%s` — %s — runtime %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$name" "$q" "$outcome" "$(fmt_duration "$elapsed")" >> "$LOGFILE"
   fi
@@ -99,6 +100,7 @@ log_api_failure() {
   echo ""
   echo "Warning: $action failed for message $id: $oneline"
   if [[ "$DRY_RUN" == "false" ]]; then
+    # shellcheck disable=SC2016  # backticks are Markdown code spans in the log format
     printf -- '- %s — **%s** (rescue) — WARNING: %s failed for message `%s`: %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$name" "$action" "$id" "$oneline" >> "$LOGFILE"
   fi

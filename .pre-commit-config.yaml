@@ -1,0 +1,31 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff lint
+        language: system
+        entry: uv run --directory python ruff check --fix .
+        pass_filenames: false
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        language: system
+        entry: uv run --directory python ruff format .
+        pass_filenames: false
+        types: [python]
+
+      - id: mypy
+        name: mypy type check
+        language: system
+        entry: uv run --directory python mypy mbox_import.py
+        pass_filenames: false
+        types: [python]
+
+      - id: shellcheck
+        name: shellcheck
+        language: system
+        entry: bash -c 'command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not installed (brew install shellcheck)"; exit 0; }; shellcheck "$@"' --
+        pass_filenames: true
+        types: [shell]
+        files: ^scripts/

@@ -26,6 +26,7 @@ command -v jq >/dev/null 2>&1 || { echo "jq not found. Install it (e.g. 'brew in
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
+# shellcheck disable=SC2034  # used inside single-quoted trap string (expanded at exit time)
 RUN_START_TS=$(date +%s)
 trap 'echo "Total runtime: $(fmt_duration $(( $(date +%s) - RUN_START_TS )))"' EXIT
 
@@ -41,6 +42,7 @@ if [[ "${1:-}" == "--since" && -n "${2:-}" ]]; then
   SINCE_DAYS="$2"
   CUTOFF=$(date -u -v-"${SINCE_DAYS}"d '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) \
     || CUTOFF=$(date -u -d "-${SINCE_DAYS} days" '+%Y-%m-%dT%H:%M:%SZ')
+  # shellcheck disable=SC2016  # $cutoff is a jq variable, not a shell variable
   JQ_FILTER='select(.ts >= $cutoff)'
   JQ_ARGS=(--arg cutoff "$CUTOFF")
   echo "Audit log summary — last $SINCE_DAYS day(s) (since $CUTOFF UTC)"

@@ -97,6 +97,7 @@ log_api_failure() {
   echo ""
   echo "Warning: $action failed for message $id: $oneline"
   if [[ "$DRY_RUN" == "false" ]]; then
+    # shellcheck disable=SC2016  # backticks are Markdown code spans in the log format
     printf -- '- %s — **%s** (reference) — WARNING: %s failed for message `%s`: %s\n' \
       "$(date '+%Y-%m-%d %H:%M')" "$name" "$action" "$id" "$oneline" >> "$LOGFILE"
   fi
@@ -193,6 +194,7 @@ for i in "${!NAMES[@]}"; do
     echo "Labeled $labeled message(s) in category: $name (runtime $(fmt_duration "$cat_elapsed"))"
   fi
   RUN_FAILED_TOTAL=$((RUN_FAILED_TOTAL + failed))
+  # shellcheck disable=SC2016  # backticks are Markdown code spans in the log format
   printf -- '- %s — **%s** (reference) — query: `%s` — labeled %s, failed %s — runtime %s\n' \
     "$(date '+%Y-%m-%d %H:%M')" "$name" "$q" "$labeled" "$failed" "$(fmt_duration "$cat_elapsed")" >> "$LOGFILE"
 done

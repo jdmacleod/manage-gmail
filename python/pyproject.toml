@@ -1,0 +1,45 @@
+[project]
+name = "manage-gmail-mbox"
+version = "0.1.0"
+description = "Gmail Takeout mbox → SQLite importer and Datasette explorer"
+requires-python = ">=3.10"
+dependencies = [
+    # SQLite explorer — browse, query, and chart the imported mail.
+    # Pinned below 1.0 to use the stable pre-1.0 metadata.yaml config format
+    # used by metadata.yaml in this directory. Upgrade with care; see
+    # https://docs.datasette.io/en/latest/changelog.html
+    "datasette>=0.64.6,<1.0",
+    # Chart plugin: adds a "Vega" visualisation tab to any Datasette query.
+    "datasette-vega>=0.6.2",
+    # Progress bar for the potentially long mbox import.
+    "tqdm>=4.66.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv]
+# uv stores the lockfile as uv.lock at the project root. Commit it so
+# everyone gets identical installs.  Run `uv lock --upgrade` to refresh.

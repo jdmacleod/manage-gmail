@@ -123,6 +123,30 @@ queries, and how to tune thresholds: see `PRUNE_PLAYBOOK.md`.
 To permanently empty Trash, do that yourself in the Gmail web UI — this
 toolkit deliberately doesn't automate permanent deletion.
 
+## Offline analysis (mbox → SQLite + Datasette)
+
+The `python/` directory contains a separate toolchain for analysing a Gmail
+Takeout export — useful for bulk queries, trend analysis, and finding things
+the live-mailbox scripts can't reach (e.g. old Trash, full-body search).
+
+**Quick start** (requires [uv](https://docs.astral.sh/uv/getting-started/installation/)):
+
+```bash
+cd python/
+uv sync                          # one-time: create .venv and install deps
+
+# Import your Takeout mbox (resumable — safe to Ctrl+C and re-run)
+uv run python mbox_import.py ~/Takeout/Mail/All\ mail\ Including\ Spam\ and\ Trash.mbox
+
+# Browse and query in your browser
+uv run datasette serve gmail.db --metadata metadata.yaml --open
+```
+
+The importer stores all headers as structured columns plus a `headers_json`
+fallback so nothing is discarded.  `gmail.db` is gitignored (it contains your
+mail).  See `python/metadata.yaml` for the pre-built canned queries and
+`python/mbox_import.py --help` for all import options.
+
 ## Versioning
 
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)

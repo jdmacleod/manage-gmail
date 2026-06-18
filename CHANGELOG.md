@@ -13,6 +13,25 @@ fixes and query tuning.
 
 ## [Unreleased]
 
+### Added
+
+- `python/` — Python tooling for offline analysis of a Gmail Takeout mbox
+  export, managed with [uv](https://docs.astral.sh/uv/).
+  - `python/mbox_import.py` — streams any-size mbox into a SQLite database,
+    extracting all headers, decoded plaintext body (≤500 KB/message by
+    default), Gmail labels, attachment filenames, and derived columns
+    (`year_month`, `from_email`, `is_unread`, `in_inbox`, etc.).  Import is
+    resumable via stored byte offset — safe to interrupt and re-run.
+    Optional `--build-fts` flag builds an FTS5 full-text search index over
+    subject, sender, and body.
+  - `python/metadata.yaml` — Datasette configuration with 12 pre-built
+    canned queries (volume by month/year, top senders, unread inbox, active
+    threads, largest messages, attachments, sent recipients, import status)
+    and the `datasette-vega` chart plugin for visualising query results.
+  - `python/pyproject.toml` + `python/.python-version` (3.12) — uv project
+    declaration.  `uv sync` installs Datasette, datasette-vega, and tqdm
+    into a local `.venv`.
+
 ### Fixed
 
 - `scripts/prune.sh`, `scripts/rescue.sh`, and `scripts/label_reference.sh`
