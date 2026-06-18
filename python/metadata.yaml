@@ -389,3 +389,91 @@ databases:
           WHERE  date_ts IS NULL
           ORDER  BY mbox_offset
           LIMIT  200
+
+  # -----------------------------------------------------------------------
+  # classifications.db — AI classifier results
+  # Run: uv run datasette serve gmail.db classifications.db --metadata metadata.yaml
+  # -----------------------------------------------------------------------
+
+  classifications:
+    tables:
+      classifications:
+        sort_desc: true
+        sort: classified_at
+        facets:
+          - model
+          - prompt_version
+          - label
+
+    canned_queries:
+
+      label_distribution:
+        title: "AI label distribution by model and version"
+        sql: |
+          SELECT
+            model,
+            prompt_version,
+            label,
+            COUNT(*)                                          AS count,
+            printf('%.1f%%', COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY model, prompt_version)) AS pct
+          FROM   classifications
+          GROUP  BY model, prompt_version, label
+          ORDER  BY model, prompt_version, label
+
+      uncertain_rate_by_version:
+        title: "Uncertain rate by prompt version (single-model gate)"
+        sql: |
+          SELECT
+            prompt_version,
+            model,
+            SUM(CASE WHEN label = 'uncertain' THEN 1 ELSE 0 END) AS uncertain,
+            COUNT(*)                                               AS total,
+            printf('%.1f%%',
+              SUM(CASE WHEN label = 'uncertain' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+            )                                                      AS uncertain_rate,
+            CASE
+              WHEN SUM(CASE WHEN label = 'uncertain' THEN 1 ELSE 0 END) * 1.0 / COUNT(*) > 0.30
+              THEN 'WARN: refine prompt before Stage 3'
+              ELSE 'OK'
+            END                                                    AS gate_status
+          FROM   classifications
+          GROUP  BY prompt_version, model
+          ORDER  BY prompt_version, model
+
+      disagreement_heatmap:
+        title: "Model disagreement rate by email category (Stage 3)"
+        sql: |
+          -- Requires: the three-model Stage 3 run to be complete.
+          -- Joins classifications.db against gmail.db labels via message_id.
+          -- Each row is a (message_id, prompt_version) where at least two models disagree.
+          SELECT
+            c.prompt_version,
+            COUNT(DISTINCT c.message_id)                           AS total_messages,
+            SUM(CASE WHEN c.disagree = 1 THEN 1 ELSE 0 END)      AS disagreements,
+            printf('%.1f%%',
+              SUM(CASE WHEN c.disagree = 1 THEN 1 ELSE 0 END) * 100.0
+              / NULLIF(COUNT(DISTINCT c.message_id), 0)
+            )                                                       AS disagreement_rate
+          FROM (
+            SELECT
+              message_id,
+              prompt_version,
+              CASE WHEN COUNT(DISTINCT label) > 1 THEN 1 ELSE 0 END AS disagree
+            FROM classifications
+            GROUP BY message_id, prompt_version
+          ) c
+          GROUP BY c.prompt_version
+          ORDER BY c.prompt_version
+
+      corrections_error_rate:
+        title: "Prompt version error rate against human corrections"
+        sql: |
+          -- Measures how often the model's label differs from the human correction.
+          -- A prompt version is ready for live deployment when error_rate < 5%.
+          -- Run this query after reviewing uncertain cases with --review-uncertain.
+          --
+          -- NOTE: This query requires corrections.jsonl to be imported as a table.
+          -- Use: sqlite-utils insert corrections.db corrections corrections.jsonl --nl
+          -- then: uv run datasette serve gmail.db classifications.db corrections.db ...
+          SELECT
+            'Load corrections.jsonl into corrections.db to use this query' AS instructions

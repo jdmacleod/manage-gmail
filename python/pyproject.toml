@@ -13,6 +13,11 @@ dependencies = [
     "datasette-vega>=0.6.2",
     # Progress bar for the potentially long mbox import.
     "tqdm>=4.66.0",
+    # Ollama Python SDK — calls local/remote Ollama inference endpoint.
+    # Set OLLAMA_HOST env var to point at a non-localhost Ollama instance.
+    "ollama>=0.3",
+    # YAML prompt file loader — reads python/prompts/v*.yaml versioned prompts.
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
