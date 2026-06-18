@@ -18,7 +18,7 @@
 # The body is truncated to 2000 chars. Headers are outside the truncated window
 # so subject and sender are always fully visible to the model.
 
-version: "1.0.0"
+version: "v1.0.0"
 
 system_prompt: |
   You are an email classifier for a personal Gmail archive. Your job is to
