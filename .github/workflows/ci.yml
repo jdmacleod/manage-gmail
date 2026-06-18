@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev dependencies
+        run: uv sync --directory python --group dev
+
+      - name: Lint — ruff check
+        run: uv run --directory python ruff check --no-fix .
+
+      - name: Format — ruff format
+        run: uv run --directory python ruff format --check .
+
+      - name: Type check — mypy
+        run: uv run --directory python mypy mbox_import.py
+
+      - name: Tests — pytest
+        run: uv run --directory python pytest -v
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint scripts — shellcheck
+        run: shellcheck scripts/*.sh
