@@ -82,6 +82,28 @@ QUERIES=(
 # config/keep_rules.local.example.tsv for the format.
 load_local_keep_rules "reference" "$LABEL_NAME"
 
+# Logs a per-message API failure (e.g. "Precondition check failed", which
+# Google's API returns when a message's state has changed — already
+# relabeled/deleted — since the candidate list was built) to the terminal
+# and PRUNE_LOG.md, then lets the category continue with the next message.
+# No retry: re-running label_reference.sh is safe, since already-labeled
+# mail is skipped via -label:Reference in each query. Relies on $name,
+# $LOGFILE, $DRY_RUN from the enclosing loop.
+log_api_failure() {
+  local action="$1" id="$2" err="$3"
+  local oneline
+  oneline=$(printf '%s' "$err" | grep -v '^Using keyring backend' | tr '\n' ' ' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || true
+  echo ""
+  echo "Warning: $action failed for message $id: $oneline"
+  if [[ "$DRY_RUN" == "false" ]]; then
+    printf -- '- %s — **%s** (reference) — WARNING: %s failed for message `%s`: %s\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$name" "$action" "$id" "$oneline" >> "$LOGFILE"
+  fi
+}
+
+RUN_FAILED_TOTAL=0
+
 for i in "${!NAMES[@]}"; do
   name="${NAMES[$i]}"
   q="${QUERIES[$i]}"
@@ -136,6 +158,7 @@ for i in "${!NAMES[@]}"; do
   total=$(printf '%s\n' "$all_ids" | grep -c . || true)
 
   labeled=0
+  failed=0
   processed=0
   while IFS= read -r id; do
     [[ -z "$id" ]] && continue
@@ -144,25 +167,52 @@ for i in "${!NAMES[@]}"; do
 
     modify_params=$(jq -nc --arg id "$id" '{"userId":"me","id":$id}')
     modify_body=$(jq -nc --arg lid "$LABEL_ID" '{"addLabelIds":[$lid]}')
-    gws gmail users messages modify --params "$modify_params" --json "$modify_body" >/dev/null
+    # If the message's state changed since it was listed (e.g. already
+    # relabeled/deleted by another client), the API can return an error
+    # such as "Precondition check failed" here. Don't let `set -e` kill
+    # the whole run over one message — log it and move on.
+    if ! modify_err=$(gws gmail users messages modify --params "$modify_params" --json "$modify_body" 2>&1 >/dev/null); then
+      failed=$((failed + 1))
+      log_api_failure "label" "$id" "$modify_err"
+      printf '\r  [%d/%d] %d%% — labeled %d, failed %d%s   ' "$processed" "$total" "$pct" "$labeled" "$failed" \
+        "$(progress_suffix "$processed" "$total" "$cat_start_ts")"
+      sleep 0.05
+      continue
+    fi
     labeled=$((labeled + 1))
-    printf '\r  [%d/%d] %d%% — labeled %d%s   ' "$processed" "$total" "$pct" "$labeled" \
+    printf '\r  [%d/%d] %d%% — labeled %d, failed %d%s   ' "$processed" "$total" "$pct" "$labeled" "$failed" \
       "$(progress_suffix "$processed" "$total" "$cat_start_ts")"
     sleep 0.05
   done <<< "$all_ids"
   [[ "$total" -gt 0 ]] && echo ""
 
   cat_elapsed=$(( $(date +%s) - cat_start_ts ))
-  echo "Labeled $labeled message(s) in category: $name (runtime $(fmt_duration "$cat_elapsed"))"
-  printf -- '- %s — **%s** (reference) — query: `%s` — labeled %s — runtime %s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$name" "$q" "$labeled" "$(fmt_duration "$cat_elapsed")" >> "$LOGFILE"
+  if [[ "$failed" -gt 0 ]]; then
+    echo "Labeled $labeled message(s), failed $failed (see $LOGFILE), in category: $name (runtime $(fmt_duration "$cat_elapsed"))"
+  else
+    echo "Labeled $labeled message(s) in category: $name (runtime $(fmt_duration "$cat_elapsed"))"
+  fi
+  RUN_FAILED_TOTAL=$((RUN_FAILED_TOTAL + failed))
+  printf -- '- %s — **%s** (reference) — query: `%s` — labeled %s, failed %s — runtime %s\n' \
+    "$(date '+%Y-%m-%d %H:%M')" "$name" "$q" "$labeled" "$failed" "$(fmt_duration "$cat_elapsed")" >> "$LOGFILE"
 done
 
 TOTAL_ELAPSED=$(( $(date +%s) - RUN_START_TS ))
 echo "=========================================="
-echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED")"
+if [[ "$RUN_FAILED_TOTAL" -gt 0 ]]; then
+  echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED") — $RUN_FAILED_TOTAL API failure(s), see $LOGFILE"
+else
+  echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED")"
+fi
 if [[ "$DRY_RUN" == "false" ]]; then
   echo "Run log: $LOGFILE"
+  if [[ "$RUN_FAILED_TOTAL" -gt 0 ]]; then
+    printf -- '- %s — **Run complete** — total runtime %s — %d API failure(s)\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" "$RUN_FAILED_TOTAL" >> "$LOGFILE"
+  else
+    printf -- '- %s — **Run complete** — total runtime %s\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" >> "$LOGFILE"
+  fi
   # Lets prune.sh warn if this script hasn't run recently (see
   # REFERENCE_MAX_AGE_DAYS in prune.sh) — Reference labeling is the main
   # protection for "noisy" senders that also send mail worth keeping.

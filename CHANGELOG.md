@@ -13,6 +13,16 @@ fixes and query tuning.
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/prune.sh`, `scripts/rescue.sh`, and `scripts/label_reference.sh`
+  no longer abort an entire run if the Gmail API rejects a single
+  message's trash/untrash/label call (e.g. "Precondition check failed"
+  because the message's state changed since it was listed). Per-message
+  failures are now logged to `PRUNE_LOG.md` and counted in each category's
+  summary and the final run total, and the run continues with the next
+  message.
+
 ## [0.1.0] - 2026-06-12
 
 ### Added

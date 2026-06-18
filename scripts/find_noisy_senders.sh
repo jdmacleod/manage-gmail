@@ -26,8 +26,8 @@ if [[ "${1:-}" == "--debug" ]]; then
 fi
 
 # ---- Thresholds (edit to taste) ----
-LOOKBACK="90d"      # how far back to sample
-SAMPLE_LIMIT=300    # max messages to inspect (keeps runtime reasonable)
+LOOKBACK="180d"      # how far back to sample
+SAMPLE_LIMIT=800    # max messages to inspect (keeps runtime reasonable)
 MIN_COUNT=5         # only report senders with at least this many messages
 MAX_READ_PCT=10     # ...and at most this % read
 

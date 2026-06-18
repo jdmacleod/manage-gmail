@@ -43,7 +43,7 @@ AUTH_CODE_AGE="7d"      # expired verification codes / password resets
 AUTOREPLY_AGE="30d"     # out-of-office / bounce / DSN noise
 CALENDAR_NOTIF_AGE="30d" # past Google Calendar notification emails
 SHIPPING_AGE="3m"       # post-delivery shipping notifications
-OLD_UPDATES_AGE="1y"    # old read newsletters/digests (category:updates)
+OLD_UPDATES_AGE="6m"    # old read newsletters/digests (category:updates)
 OLD_READ_AGE="1y"       # general old read mail sweep
 OLD_READ_SIZE="1M"      # size ceiling for the general sweep
 OLD_UNREAD_AGE="1y"     # old unread mail outside Primary
@@ -249,7 +249,37 @@ finish_category() {
   fi
 }
 
+# Logs a per-message API failure (e.g. "Precondition check failed", which
+# Google's API returns when a message's state has changed — already
+# trashed/deleted/relabeled — since the candidate list was built) to the
+# terminal and PRUNE_LOG.md, then lets the category continue with the next
+# message.
+#
+# A single message's API error shouldn't abort a run that may be most of
+# the way through thousands of messages — that's the failure mode this is
+# fixing (an unguarded `gws ... trash` under `set -e` previously killed the
+# whole script on the first such error, with no record of where it stopped).
+# No retry is attempted: "Precondition check failed" generally means the
+# message's state already changed (e.g. it's already in Trash), so retrying
+# the same call immediately wouldn't help. Re-running prune.sh is the simple
+# recovery path — anything already trashed just won't match the query again.
+#
+# Relies on $name, $LOGFILE, $DRY_RUN from the enclosing loop.
+log_api_failure() {
+  local action="$1" id="$2" err="$3"
+  local oneline
+  oneline=$(printf '%s' "$err" | grep -v '^Using keyring backend' | tr '\n' ' ' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || true
+  echo ""
+  echo "Warning: $action failed for message $id: $oneline"
+  if [[ "$DRY_RUN" == "false" ]]; then
+    printf -- '- %s — **%s** — WARNING: %s failed for message `%s`: %s\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$name" "$action" "$id" "$oneline" >> "$LOGFILE"
+  fi
+}
+
 RUN_START_TS=$(date +%s)
+RUN_FAILED_TOTAL=0
 
 # Parallel arrays (bash 3.2 compatible — no associative arrays)
 NAMES=(
@@ -259,7 +289,11 @@ NAMES=(
   "Auto-reply/bounce noise"
   "Past calendar notifications"
   "Post-delivery shipping notices"
-  "Old newsletters/digests"
+  "Old read newsletters/digests"
+  "Old newsletters/digests - Medium, Coursera, Glassdoor"
+  "Old news alerts that are not starred, Google, WSJ"
+  "Old news that are not starred, WSJ"
+  "Old industry news that are not starred, VES, Animation Guild"
   "Old read mail"
   "Old unread mail"
 )
@@ -272,6 +306,10 @@ QUERIES=(
   "from:calendar-notification@google.com older_than:${CALENDAR_NOTIF_AGE} -is:starred -is:important -label:Reference -in:trash"
   "from:(amazon.com OR ups.com OR fedex.com OR usps.com) subject:(delivered OR \"out for delivery\") older_than:${SHIPPING_AGE} -is:starred -is:important -label:Reference -in:trash"
   "category:updates is:read older_than:${OLD_UPDATES_AGE} -is:starred -is:important -label:Reference -in:trash"
+  "category:updates older_than:${OLD_UPDATES_AGE} from:(noreply@medium.com OR coursera.org OR glassdoor.com) has:nouserlabels -is:starred -label:Reference -in:trash"
+  "category:updates older_than:${OLD_UPDATES_AGE} subject:(\"Google Alert\" OR \"WSJ News Alert\") -is:starred -in:trash"
+  "category:updates older_than:${OLD_UPDATES_AGE} from:access.interactive.wsj.com -is:starred -in:trash"
+  "in:inbox older_than:${OLD_UPDATES_AGE} from:(info@visualeffectssociety.com OR losangeles.vesglobal.org OR info@animationguild.org OR promotions@tag839.org OR no-replyasifa-hollywood.org) -is:starred -in:trash"
   "is:read -is:starred -is:important -label:Reference -in:trash -in:sent -in:chats older_than:${OLD_READ_AGE} smaller:${OLD_READ_SIZE}"
   "is:unread -is:starred -is:important -label:Reference -in:trash -category:primary older_than:${OLD_UNREAD_AGE}"
 )
@@ -369,6 +407,7 @@ for i in "${!NAMES[@]}"; do
 
   trashed=0
   skipped_protected=0
+  failed=0
   processed=0
   while IFS= read -r id; do
     [[ -z "$id" ]] && continue
@@ -377,36 +416,66 @@ for i in "${!NAMES[@]}"; do
 
     if should_protect "$id"; then
       skipped_protected=$((skipped_protected + 1))
-      printf '\r  [%d/%d] %d%% — moved %d, skipped %d (contact/replied)%s   ' \
-        "$processed" "$total" "$pct" "$trashed" "$skipped_protected" \
+      printf '\r  [%d/%d] %d%% — moved %d, skipped %d (contact/replied), failed %d%s   ' \
+        "$processed" "$total" "$pct" "$trashed" "$skipped_protected" "$failed" \
         "$(progress_suffix "$processed" "$total" "$cat_start_ts")"
       continue
     fi
 
     trash_params=$(jq -nc --arg id "$id" '{"userId":"me","id":$id}')
-    gws gmail users messages trash --params "$trash_params" >/dev/null
+    # If the message's state changed since `all_ids` was built (e.g. it was
+    # already trashed/deleted/relabeled by another client), the API can
+    # return an error such as "Precondition check failed" here. Don't let
+    # `set -e` kill the whole run over one message — log it and move on.
+    if ! trash_err=$(gws gmail users messages trash --params "$trash_params" 2>&1 >/dev/null); then
+      failed=$((failed + 1))
+      log_api_failure "trash" "$id" "$trash_err"
+      printf '\r  [%d/%d] %d%% — moved %d, skipped %d (contact/replied), failed %d%s   ' \
+        "$processed" "$total" "$pct" "$trashed" "$skipped_protected" "$failed" \
+        "$(progress_suffix "$processed" "$total" "$cat_start_ts")"
+      sleep 0.05
+      continue
+    fi
     if [[ -n "$PRUNED_LABEL_ID" ]]; then
       modify_body=$(jq -nc --arg lid "$PRUNED_LABEL_ID" '{"addLabelIds":[$lid]}')
-      gws gmail users messages modify --params "$trash_params" --json "$modify_body" >/dev/null
+      if ! modify_err=$(gws gmail users messages modify --params "$trash_params" --json "$modify_body" 2>&1 >/dev/null); then
+        # Message is already trashed at this point — just missing its audit
+        # label. Log and keep going; not counted as a "failed" message.
+        log_api_failure "label" "$id" "$modify_err"
+      fi
     fi
     log_audit_event "$AUDIT_LOG" "pruned" "$name" "$id" "$LAST_FROM_EMAIL" "$LAST_SUBJECT"
     trashed=$((trashed + 1))
-    printf '\r  [%d/%d] %d%% — moved %d, skipped %d (contact/replied)%s   ' \
-      "$processed" "$total" "$pct" "$trashed" "$skipped_protected" \
+    printf '\r  [%d/%d] %d%% — moved %d, skipped %d (contact/replied), failed %d%s   ' \
+      "$processed" "$total" "$pct" "$trashed" "$skipped_protected" "$failed" \
       "$(progress_suffix "$processed" "$total" "$cat_start_ts")"
     sleep 0.05
   done <<< "$all_ids"
   [[ "$total" -gt 0 ]] && echo ""
 
-  echo "Moved $trashed message(s) to Trash, skipped $skipped_protected (contact/replied thread), in category: $name"
-  finish_category "moved $trashed to Trash, skipped $skipped_protected (contact/replied)"
+  if [[ "$failed" -gt 0 ]]; then
+    echo "Moved $trashed message(s) to Trash, skipped $skipped_protected (contact/replied thread), failed $failed (see $LOGFILE), in category: $name"
+  else
+    echo "Moved $trashed message(s) to Trash, skipped $skipped_protected (contact/replied thread), in category: $name"
+  fi
+  RUN_FAILED_TOTAL=$((RUN_FAILED_TOTAL + failed))
+  finish_category "moved $trashed to Trash, skipped $skipped_protected (contact/replied), failed $failed"
 done
 
 TOTAL_ELAPSED=$(( $(date +%s) - RUN_START_TS ))
 echo "=========================================="
-echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED")"
+if [[ "$RUN_FAILED_TOTAL" -gt 0 ]]; then
+  echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED") — $RUN_FAILED_TOTAL API failure(s), see $LOGFILE"
+else
+  echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED")"
+fi
 if [[ "$DRY_RUN" == "false" ]]; then
   echo "Run log: $LOGFILE"
-  printf -- '- %s — **Run complete** — total runtime %s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" >> "$LOGFILE"
+  if [[ "$RUN_FAILED_TOTAL" -gt 0 ]]; then
+    printf -- '- %s — **Run complete** — total runtime %s — %d API failure(s)\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" "$RUN_FAILED_TOTAL" >> "$LOGFILE"
+  else
+    printf -- '- %s — **Run complete** — total runtime %s\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" >> "$LOGFILE"
+  fi
 fi

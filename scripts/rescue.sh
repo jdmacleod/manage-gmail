@@ -84,6 +84,28 @@ finish_category() {
   fi
 }
 
+# Logs a per-message API failure (e.g. "Precondition check failed", which
+# Google's API returns when a message's state has changed — already
+# restored/deleted/relabeled — since the candidate list was built) to the
+# terminal and PRUNE_LOG.md, then lets the category continue with the next
+# message. No retry: re-running rescue.sh is safe, since anything already
+# restored just won't match `in:trash` again. Relies on $name, $LOGFILE,
+# $DRY_RUN from the enclosing loop.
+log_api_failure() {
+  local action="$1" id="$2" err="$3"
+  local oneline
+  oneline=$(printf '%s' "$err" | grep -v '^Using keyring backend' | tr '\n' ' ' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') || true
+  echo ""
+  echo "Warning: $action failed for message $id: $oneline"
+  if [[ "$DRY_RUN" == "false" ]]; then
+    printf -- '- %s — **%s** (rescue) — WARNING: %s failed for message `%s`: %s\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$name" "$action" "$id" "$oneline" >> "$LOGFILE"
+  fi
+}
+
+RUN_FAILED_TOTAL=0
+
 for i in "${!NAMES[@]}"; do
   name="${NAMES[$i]}"
   q="${QUERIES[$i]}"
@@ -144,6 +166,7 @@ for i in "${!NAMES[@]}"; do
   # denominator may run a little ahead of or behind the actual total — close
   # enough for a progress indicator.
   restored=0
+  failed=0
   processed=0
   max_batches=1000
   batch=0
@@ -168,36 +191,67 @@ for i in "${!NAMES[@]}"; do
       subject=$(header_value "$meta" "Subject")
 
       untrash_params=$(jq -nc --arg id "$id" '{"userId":"me","id":$id}')
-      gws gmail users messages untrash --params "$untrash_params" >/dev/null
+      # If the message's state changed since it was listed (e.g. already
+      # restored/deleted by another client), the API can return an error
+      # such as "Precondition check failed" here. Don't let `set -e` kill
+      # the whole run over one message — log it and move on.
+      if ! untrash_err=$(gws gmail users messages untrash --params "$untrash_params" 2>&1 >/dev/null); then
+        failed=$((failed + 1))
+        log_api_failure "untrash" "$id" "$untrash_err"
+        printf '\r  [%d/%d] %d%% — restored %d, failed %d%s   ' \
+          "$processed" "$count" "$pct" "$restored" "$failed" \
+          "$(progress_suffix "$processed" "$count" "$cat_start_ts")"
+        sleep 0.05
+        continue
+      fi
 
       add_label_ids=()
       [[ -n "$REFERENCE_LABEL_ID" ]] && add_label_ids+=("$REFERENCE_LABEL_ID")
       [[ -n "$RESCUED_LABEL_ID" ]] && add_label_ids+=("$RESCUED_LABEL_ID")
       if [[ ${#add_label_ids[@]} -gt 0 ]]; then
         modify_body=$(printf '%s\n' "${add_label_ids[@]}" | jq -R . | jq -sc '{addLabelIds: .}')
-        gws gmail users messages modify --params "$untrash_params" --json "$modify_body" >/dev/null
+        if ! modify_err=$(gws gmail users messages modify --params "$untrash_params" --json "$modify_body" 2>&1 >/dev/null); then
+          # Message is already restored at this point — just missing its
+          # Reference/Audit labels. Log and keep going; not counted as
+          # "failed".
+          log_api_failure "label" "$id" "$modify_err"
+        fi
       fi
 
       log_audit_event "$AUDIT_LOG" "rescued" "$name" "$id" "$from_email" "$subject"
 
       restored=$((restored + 1))
-      printf '\r  [%d/%d] %d%% — restored %d%s   ' \
-        "$processed" "$count" "$pct" "$restored" \
+      printf '\r  [%d/%d] %d%% — restored %d, failed %d%s   ' \
+        "$processed" "$count" "$pct" "$restored" "$failed" \
         "$(progress_suffix "$processed" "$count" "$cat_start_ts")"
       sleep 0.05
     done <<< "$ids"
   done
   [[ "$processed" -gt 0 ]] && echo ""
 
-  echo "Restored $restored message(s) in category: $name"
-  finish_category "restored $restored message(s)"
+  if [[ "$failed" -gt 0 ]]; then
+    echo "Restored $restored message(s), failed $failed (see $LOGFILE), in category: $name"
+  else
+    echo "Restored $restored message(s) in category: $name"
+  fi
+  RUN_FAILED_TOTAL=$((RUN_FAILED_TOTAL + failed))
+  finish_category "restored $restored message(s), failed $failed"
 done
 
 TOTAL_ELAPSED=$(( $(date +%s) - RUN_START_TS ))
 echo "=========================================="
-echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED")"
+if [[ "$RUN_FAILED_TOTAL" -gt 0 ]]; then
+  echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED") — $RUN_FAILED_TOTAL API failure(s), see $LOGFILE"
+else
+  echo "Done. Total runtime: $(fmt_duration "$TOTAL_ELAPSED")"
+fi
 if [[ "$DRY_RUN" == "false" ]]; then
   echo "Run log: $LOGFILE"
-  printf -- '- %s — **Run complete** — total runtime %s\n' \
-    "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" >> "$LOGFILE"
+  if [[ "$RUN_FAILED_TOTAL" -gt 0 ]]; then
+    printf -- '- %s — **Run complete** — total runtime %s — %d API failure(s)\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" "$RUN_FAILED_TOTAL" >> "$LOGFILE"
+  else
+    printf -- '- %s — **Run complete** — total runtime %s\n' \
+      "$(date '+%Y-%m-%d %H:%M')" "$(fmt_duration "$TOTAL_ELAPSED")" >> "$LOGFILE"
+  fi
 fi
