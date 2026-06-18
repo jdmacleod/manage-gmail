@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 from pathlib import Path
@@ -14,6 +15,7 @@ from classify_corpus import (
     _SCHEMA,
     compute_vote,
     load_corrections,
+    run_corpus_classification,
     startup_check,
     write_correction,
 )
@@ -299,12 +301,23 @@ def test_null_message_id_excluded_from_corpus(tmp_path: Path):
 
 def test_startup_check_daemon_unreachable(capsys):
     client = MagicMock()
-    client.list.side_effect = ConnectionError("refused")
+    client.list.side_effect = ConnectionError("Connection refused")
     with pytest.raises(SystemExit) as exc_info:
         startup_check(client, ["qwen3:7b"], "http://192.168.1.100:11434")
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert "Cannot reach Ollama" in captured.err
+    assert "not running" in captured.err  # hint for connection refused
+
+
+def test_startup_check_dns_failure_hint(capsys):
+    client = MagicMock()
+    client.list.side_effect = ConnectionError("Name or service not known")
+    with pytest.raises(SystemExit) as exc_info:
+        startup_check(client, ["qwen3:7b"], "http://badhost:11434")
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "hostname not found" in captured.err
 
 
 def test_startup_check_model_missing(capsys):
@@ -332,6 +345,119 @@ def test_startup_check_all_models_present():
     startup_check(
         client, ["qwen3:7b", "llama3.3:8b", "mistral-small3:latest"], "http://localhost:11434"
     )
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+
+
+def make_args(tmp_path: Path, models: list[str] | None = None) -> argparse.Namespace:
+    ns = argparse.Namespace()
+    ns.db = tmp_path / "gmail.db"
+    ns.classifications_db = tmp_path / "classifications.db"
+    ns.models = models or ["qwen3:7b"]
+    ns.stratified_sample = 0
+    ns.prompt_version = "v1.0.0"
+    ns.prompts_dir = Path(__file__).parent.parent / "prompts"
+    return ns
+
+
+def make_failing_client(error_msg: str = "Connection refused") -> MagicMock:
+    client = MagicMock()
+    client.chat.side_effect = ConnectionError(error_msg)
+    return client
+
+
+def test_circuit_breaker_aborts_after_threshold(tmp_path: Path, capsys):
+    """After CIRCUIT_BREAKER_THRESHOLD consecutive hard errors, the run aborts."""
+    gmail_path = tmp_path / "gmail.db"
+    conn = make_gmail_db(gmail_path)
+    for i in range(10):
+        conn.execute(
+            "INSERT INTO messages (message_id, from_email, subject, body_text, date_ts)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (f"msg{i}", f"sender{i}@example.com", f"Subject {i}", "Body.", 1000000 + i),
+        )
+    conn.commit()
+
+    cls_path = tmp_path / "classifications.db"
+    cls_conn = make_cls_db(cls_path)
+
+    args = make_args(tmp_path)
+    prompt = {"version": "v1.0.0", "system_prompt": "Classify."}
+    client = make_failing_client("Connection refused")
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_corpus_classification(args, client, conn, cls_conn, prompt)
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "consecutive Ollama errors" in captured.err
+    assert "aborting" in captured.err
+
+
+def test_circuit_breaker_resets_on_success(tmp_path: Path, capsys):
+    """Successful responses reset the consecutive error counter."""
+    gmail_path = tmp_path / "gmail.db"
+    conn = make_gmail_db(gmail_path)
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO messages (message_id, from_email, subject, body_text, date_ts)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (f"msg{i}", f"sender{i}@example.com", f"Subject {i}", "Body.", 1000000 + i),
+        )
+    conn.commit()
+
+    cls_path = tmp_path / "classifications.db"
+    cls_conn = make_cls_db(cls_path)
+
+    args = make_args(tmp_path)
+    prompt = {"version": "v1.0.0", "system_prompt": "Classify."}
+
+    # Client: fail twice, then succeed — should NOT trigger circuit breaker
+    client = MagicMock()
+    ok_msg = MagicMock()
+    ok_msg.content = '{"label": "keep", "confidence": 0.9, "reason": "ok"}'
+    client.chat.side_effect = [
+        ConnectionError("refused"),
+        ConnectionError("refused"),
+        MagicMock(message=ok_msg),
+    ]
+
+    # Should complete without SystemExit
+    run_corpus_classification(args, client, conn, cls_conn, prompt)
+    captured = capsys.readouterr()
+    assert "consecutive Ollama errors" not in captured.err
+
+
+def test_circuit_breaker_json_errors_do_not_count(tmp_path: Path, capsys):
+    """JSON parse errors (model quality issues) do not trigger the circuit breaker."""
+    gmail_path = tmp_path / "gmail.db"
+    conn = make_gmail_db(gmail_path)
+    for i in range(10):
+        conn.execute(
+            "INSERT INTO messages (message_id, from_email, subject, body_text, date_ts)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (f"msg{i}", f"sender{i}@example.com", f"Subject {i}", "Body.", 1000000 + i),
+        )
+    conn.commit()
+
+    cls_path = tmp_path / "classifications.db"
+    cls_conn = make_cls_db(cls_path)
+
+    args = make_args(tmp_path)
+    prompt = {"version": "v1.0.0", "system_prompt": "Classify."}
+
+    # Model returns non-JSON (parse error) — should be classified as uncertain but NOT abort
+    bad_msg = MagicMock()
+    bad_msg.content = "Sorry, I cannot classify this."
+    client = MagicMock()
+    client.chat.return_value = MagicMock(message=bad_msg)
+
+    run_corpus_classification(args, client, conn, cls_conn, prompt)
+    captured = capsys.readouterr()
+    assert "consecutive Ollama errors" not in captured.err
 
 
 # ---------------------------------------------------------------------------

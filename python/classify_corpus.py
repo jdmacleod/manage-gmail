@@ -58,6 +58,11 @@ DEFAULT_MODELS = ["qwen3:7b", "llama3.3:8b", "mistral-small3:latest"]
 # adding more models.
 UNCERTAIN_RATE_WARN = 0.30
 
+# Circuit breaker: abort a model pass after this many consecutive hard Ollama
+# errors (connection failures, not JSON parse errors). Prevents a host-down
+# scenario from silently writing thousands of entries to errors.jsonl.
+CIRCUIT_BREAKER_THRESHOLD = 5
+
 # Body character limit for the --review-uncertain display (shorter than model limit)
 REVIEW_BODY_CHARS = 400
 
@@ -162,6 +167,23 @@ def write_correction(path: Path, entry: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+_CONNECT_HINTS: list[tuple[str, str]] = [
+    ("Name or service not known", "hostname not found — check for a typo in OLLAMA_HOST"),
+    ("nodename nor servname provided", "hostname not found — check for a typo in OLLAMA_HOST"),
+    ("Connection refused", "Ollama process is not running on that host/port"),
+    ("timed out", "host is reachable but Ollama is not responding — port mismatch?"),
+    ("ConnectError", "cannot connect — verify host and port in OLLAMA_HOST"),
+]
+
+
+def _connect_hint(exc: BaseException) -> str:
+    msg = str(exc)
+    for fragment, hint in _CONNECT_HINTS:
+        if fragment.lower() in msg.lower():
+            return hint
+    return "check that Ollama is running and OLLAMA_HOST is correct"
+
+
 def startup_check(client: ollama.Client, required_models: list[str], host: str) -> None:
     """Verify the Ollama daemon is reachable and all required models are available.
 
@@ -172,8 +194,8 @@ def startup_check(client: ollama.Client, required_models: list[str], host: str) 
     except Exception as exc:
         print(
             f"ERROR: Cannot reach Ollama at {host}\n"
-            f"  {exc}\n"
-            "  Check that Ollama is running and that OLLAMA_HOST is set correctly.",
+            f"  {_connect_hint(exc)}\n"
+            f"  ({type(exc).__name__}: {exc})",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -368,6 +390,9 @@ def run_corpus_classification(
 
         print(f"{model}: classifying {len(pending)} messages ...", flush=True)
 
+        consecutive_errors = 0
+        last_error: str | None = None
+
         for i, msg in enumerate(pending):
             is_last = i == len(pending) - 1
             ka = 0 if is_last else -1
@@ -376,7 +401,9 @@ def run_corpus_classification(
             now = datetime.now(UTC).isoformat()
 
             if result["error"] and result["raw_response"] is None:
-                # Hard Ollama error — write to errors.jsonl and skip
+                # Hard Ollama error (connection failure, not a JSON parse error)
+                consecutive_errors += 1
+                last_error = result["error"]
                 with errors_path.open("a") as ef:
                     ef.write(
                         json.dumps(
@@ -389,7 +416,21 @@ def run_corpus_classification(
                         )
                         + "\n"
                     )
+                if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD:
+                    cls_conn.commit()
+                    print(
+                        f"\nERROR: {consecutive_errors} consecutive Ollama errors on"
+                        f" model {model!r} — aborting.\n"
+                        f"  Last error: {last_error}\n"
+                        f"  Host: {os.environ.get('OLLAMA_HOST', 'http://localhost:11434')}\n"
+                        "  Check that Ollama is still running and OLLAMA_HOST is correct.\n"
+                        "  Re-run the same command to resume from where it stopped.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
                 continue
+
+            consecutive_errors = 0  # reset on any successful response
 
             cls_conn.execute(
                 """
