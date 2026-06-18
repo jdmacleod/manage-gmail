@@ -3,7 +3,7 @@
 # Usage (from the python/ directory):
 #   uv run datasette serve gmail.db --metadata metadata.yaml --open
 #
-# The "canned_queries" section pre-loads useful queries into Datasette's
+# The "queries" section pre-loads useful queries into Datasette's
 # Query menu.  Edit freely — changes take effect on the next page load
 # (no server restart needed in Datasette 0.64+).
 #
@@ -23,8 +23,7 @@ databases:
   gmail:
     tables:
       messages:
-        sort_desc: true
-        sort: date_ts
+        sort_desc: date_ts
         # Columns shown by default in the table view; technical columns are
         # hidden (still accessible via SQL and the full row view).
         hidden_columns:
@@ -48,7 +47,7 @@ databases:
           - has_attachments
         label_column: subject
 
-    canned_queries:
+    queries:
 
       # -----------------------------------------------------------------------
       # Volume / overview
@@ -405,7 +404,7 @@ databases:
           - prompt_version
           - label
 
-    canned_queries:
+    queries:
 
       label_distribution:
         title: "AI label distribution by model and version"
