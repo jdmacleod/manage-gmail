@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep GitHub Actions versions current
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Keep Python dependencies current (pyproject.toml + uv.lock)
+  - package-ecosystem: "pip"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
