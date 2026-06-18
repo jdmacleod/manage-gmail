@@ -38,6 +38,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -306,6 +307,36 @@ def compute_vote(labels: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Progress formatting
+# ---------------------------------------------------------------------------
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format a duration in seconds as a compact human string."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
+def _fmt_progress(done: int, total: int, elapsed: float) -> str:
+    """Return a single-line progress string with rate and ETA."""
+    pct = done / total * 100
+    rate = done / elapsed if elapsed > 0 else 0.0
+    rate_str = f"{rate:.1f} msg/s" if rate >= 1 else f"{rate * 60:.1f} msg/min"
+    if rate > 0:
+        eta = _fmt_duration((total - done) / rate)
+        eta_str = f"ETA {eta}"
+    else:
+        eta_str = "ETA --"
+    return f"{done}/{total} ({pct:.1f}%)  {rate_str}  {eta_str}"
+
+
+# ---------------------------------------------------------------------------
 # Main corpus classification
 # ---------------------------------------------------------------------------
 
@@ -388,10 +419,13 @@ def run_corpus_classification(
             print(f"{model}: all {len(messages)} messages already classified — skipping.")
             continue
 
-        print(f"{model}: classifying {len(pending)} messages ...", flush=True)
+        already = len(messages) - len(pending)
+        resume_note = f" (resuming from {already})" if already else ""
+        print(f"{model}: classifying {len(pending)} messages{resume_note} ...", flush=True)
 
         consecutive_errors = 0
         last_error: str | None = None
+        pass_start = time.monotonic()
 
         for i, msg in enumerate(pending):
             is_last = i == len(pending) - 1
@@ -453,10 +487,13 @@ def run_corpus_classification(
 
             if (i + 1) % 50 == 0:
                 cls_conn.commit()
-                print(f"  {model}: {i + 1}/{len(pending)}", flush=True)
+                elapsed = time.monotonic() - pass_start
+                progress = _fmt_progress(i + 1, len(pending), elapsed)
+                print(f"  {model}: {progress}", flush=True)
 
         cls_conn.commit()
-        print(f"{model}: done.")
+        elapsed = time.monotonic() - pass_start
+        print(f"{model}: done — {len(pending)} messages in {_fmt_duration(elapsed)}.")
 
     # --- Voting & uncertain rate ---
     if len(models) == 1:
