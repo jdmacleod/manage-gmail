@@ -111,7 +111,7 @@ def test_classify_message_valid_json_keep():
     client = make_mock_client(
         '{"label": "keep", "confidence": 0.9, "reason": "Personal correspondence."}'
     )
-    result = classify_corpus.classify_message(client, "qwen3:7b", make_prompt(), make_message())
+    result = classify_corpus.classify_message(client, "qwen3.5:9b", make_prompt(), make_message())
     assert result["label"] == "keep"
     assert result["confidence"] == pytest.approx(0.9)
     assert result["reason"] == "Personal correspondence."
@@ -120,14 +120,14 @@ def test_classify_message_valid_json_keep():
 
 def test_classify_message_valid_json_delete():
     client = make_mock_client('{"label": "delete", "confidence": 0.95, "reason": "Newsletter."}')
-    result = classify_corpus.classify_message(client, "qwen3:7b", make_prompt(), make_message())
+    result = classify_corpus.classify_message(client, "qwen3.5:9b", make_prompt(), make_message())
     assert result["label"] == "delete"
     assert result["error"] is None
 
 
 def test_classify_message_invalid_json_returns_uncertain():
     client = make_mock_client("Sorry, I cannot classify this email. It appears to be...")
-    result = classify_corpus.classify_message(client, "qwen3:7b", make_prompt(), make_message())
+    result = classify_corpus.classify_message(client, "qwen3.5:9b", make_prompt(), make_message())
     assert result["label"] == "uncertain"
     assert result["confidence"] is None
     assert result["raw_response"] is not None
@@ -136,14 +136,14 @@ def test_classify_message_invalid_json_returns_uncertain():
 
 def test_classify_message_invalid_label_returns_uncertain():
     client = make_mock_client('{"label": "spam", "confidence": 0.8, "reason": "Spam."}')
-    result = classify_corpus.classify_message(client, "qwen3:7b", make_prompt(), make_message())
+    result = classify_corpus.classify_message(client, "qwen3.5:9b", make_prompt(), make_message())
     assert result["label"] == "uncertain"
 
 
 def test_classify_message_ollama_error_returns_uncertain():
     client = MagicMock()
     client.chat.side_effect = ConnectionError("Ollama unreachable")
-    result = classify_corpus.classify_message(client, "qwen3:7b", make_prompt(), make_message())
+    result = classify_corpus.classify_message(client, "qwen3.5:9b", make_prompt(), make_message())
     assert result["label"] == "uncertain"
     assert result["raw_response"] is None
     assert "Ollama unreachable" in result["error"]
@@ -303,7 +303,7 @@ def test_startup_check_daemon_unreachable(capsys):
     client = MagicMock()
     client.list.side_effect = ConnectionError("Connection refused")
     with pytest.raises(SystemExit) as exc_info:
-        startup_check(client, ["qwen3:7b"], "http://192.168.1.100:11434")
+        startup_check(client, ["qwen3.5:9b"], "http://192.168.1.100:11434")
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert "Cannot reach Ollama" in captured.err
@@ -314,7 +314,7 @@ def test_startup_check_dns_failure_hint(capsys):
     client = MagicMock()
     client.list.side_effect = ConnectionError("Name or service not known")
     with pytest.raises(SystemExit) as exc_info:
-        startup_check(client, ["qwen3:7b"], "http://badhost:11434")
+        startup_check(client, ["qwen3.5:9b"], "http://badhost:11434")
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert "hostname not found" in captured.err
@@ -323,27 +323,27 @@ def test_startup_check_dns_failure_hint(capsys):
 def test_startup_check_model_missing(capsys):
     client = MagicMock()
     model_obj = MagicMock()
-    model_obj.model = "llama3.3:8b"
+    model_obj.model = "gemma4:e4b"
     client.list.return_value.models = [model_obj]
     with pytest.raises(SystemExit) as exc_info:
-        startup_check(client, ["llama3.3:8b", "qwen3:7b"], "http://localhost:11434")
+        startup_check(client, ["gemma4:e4b", "qwen3.5:9b"], "http://localhost:11434")
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert "qwen3:7b" in captured.err
+    assert "qwen3.5:9b" in captured.err
     assert "ollama pull" in captured.err
 
 
 def test_startup_check_all_models_present():
     client = MagicMock()
     models_list = []
-    for tag in ["qwen3:7b", "llama3.3:8b", "mistral-small3:latest"]:
+    for tag in ["qwen3.5:9b", "gemma4:e4b", "mistral-small3.2:latest"]:
         m = MagicMock()
         m.model = tag
         models_list.append(m)
     client.list.return_value.models = models_list
     # Should not raise
     startup_check(
-        client, ["qwen3:7b", "llama3.3:8b", "mistral-small3:latest"], "http://localhost:11434"
+        client, ["qwen3.5:9b", "gemma4:e4b", "mistral-small3.2:latest"], "http://localhost:11434"
     )
 
 
@@ -356,7 +356,7 @@ def make_args(tmp_path: Path, models: list[str] | None = None) -> argparse.Names
     ns = argparse.Namespace()
     ns.db = tmp_path / "gmail.db"
     ns.classifications_db = tmp_path / "classifications.db"
-    ns.models = models or ["qwen3:7b"]
+    ns.models = models or ["qwen3.5:9b"]
     ns.stratified_sample = 0
     ns.prompt_version = "v1.0.0"
     ns.prompts_dir = Path(__file__).parent.parent / "prompts"

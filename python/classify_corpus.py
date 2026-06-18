@@ -6,7 +6,7 @@ or more Ollama models, and writes results to classifications.db.  Human
 corrections are captured via --review-uncertain and stored in corrections.jsonl.
 
 Stage 2: Single-model baseline
-  uv run python classify_corpus.py --db ~/gmail.db --models qwen3:7b
+  uv run python classify_corpus.py --db ~/gmail.db --models qwen3.5:9b
 
 Stage 3: Three-model adversarial run (batch-by-model for efficiency)
   uv run python classify_corpus.py --db ~/gmail.db
@@ -51,7 +51,7 @@ from sanitize import build_user_turn, sanitize
 # Default models (Stage 3)
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODELS = ["qwen3:7b", "llama3.3:8b", "mistral-small3:latest"]
+DEFAULT_MODELS = ["qwen3.5:9b", "gemma4:e4b", "mistral-small3.2:latest"]
 
 # Uncertain rate threshold: if more than this fraction of the stratified sample
 # comes back uncertain from a single model, the prompt needs refinement before
@@ -227,7 +227,7 @@ def classify_message(
 
     Args:
         client:      Ollama client (configured with OLLAMA_HOST).
-        model:       Ollama model tag (e.g. "qwen3:7b").
+        model:       Ollama model tag (e.g. "qwen3.5:9b").
         prompt:      Loaded prompt YAML dict (system_prompt, etc.).
         message:     Dict with keys: message_id, from_email, from_name, subject,
                      date_str, body_text.
