@@ -86,6 +86,66 @@ databases:
           GROUP  BY year
           ORDER  BY year DESC
 
+      received_per_year:
+        title: "Emails received per calendar year"
+        sql: |
+          SELECT
+            year,
+            COUNT(*)          AS received,
+            SUM(is_unread)    AS still_unread,
+            SUM(is_starred)   AS starred
+          FROM   messages
+          WHERE  year IS NOT NULL
+            AND  (in_sent = 0 OR in_sent IS NULL)
+          GROUP  BY year
+          ORDER  BY year DESC
+
+      sent_per_year:
+        title: "Emails sent per calendar year"
+        sql: |
+          SELECT
+            year,
+            COUNT(*)  AS sent
+          FROM   messages
+          WHERE  year IS NOT NULL
+            AND  in_sent = 1
+          GROUP  BY year
+          ORDER  BY year DESC
+
+      by_day_of_week:
+        title: "Message volume by day of week"
+        sql: |
+          SELECT
+            CASE strftime('%w', date_ts, 'unixepoch')
+              WHEN '0' THEN '0 – Sun'
+              WHEN '1' THEN '1 – Mon'
+              WHEN '2' THEN '2 – Tue'
+              WHEN '3' THEN '3 – Wed'
+              WHEN '4' THEN '4 – Thu'
+              WHEN '5' THEN '5 – Fri'
+              WHEN '6' THEN '6 – Sat'
+            END                 AS day_of_week,
+            COUNT(*)            AS total,
+            SUM(CASE WHEN in_sent = 0 OR in_sent IS NULL THEN 1 ELSE 0 END) AS received,
+            SUM(CASE WHEN in_sent = 1 THEN 1 ELSE 0 END)                    AS sent
+          FROM   messages
+          WHERE  date_ts IS NOT NULL
+          GROUP  BY day_of_week
+          ORDER  BY day_of_week
+
+      by_hour_of_day:
+        title: "Message volume by hour of day (UTC)"
+        sql: |
+          SELECT
+            CAST(strftime('%H', date_ts, 'unixepoch') AS INTEGER)  AS hour_utc,
+            COUNT(*)            AS total,
+            SUM(CASE WHEN in_sent = 0 OR in_sent IS NULL THEN 1 ELSE 0 END) AS received,
+            SUM(CASE WHEN in_sent = 1 THEN 1 ELSE 0 END)                    AS sent
+          FROM   messages
+          WHERE  date_ts IS NOT NULL
+          GROUP  BY hour_utc
+          ORDER  BY hour_utc
+
       # -----------------------------------------------------------------------
       # Senders
       # -----------------------------------------------------------------------
@@ -122,6 +182,36 @@ databases:
           ORDER  BY message_count DESC
           LIMIT  200
 
+      top_senders_trash:
+        title: "Top senders in Trash (unsubscribe candidates)"
+        sql: |
+          SELECT
+            from_email,
+            from_name,
+            COUNT(*)                                            AS trashed_count,
+            datetime(MAX(date_ts), 'unixepoch')                AS last_trashed
+          FROM   messages
+          WHERE  in_trash = 1 AND from_email IS NOT NULL
+          GROUP  BY from_email
+          ORDER  BY trashed_count DESC
+          LIMIT  100
+
+      storage_by_sender:
+        title: "Storage footprint by sender"
+        sql: |
+          SELECT
+            from_email,
+            from_name,
+            COUNT(*)                                                AS message_count,
+            printf('%.1f MB', SUM(body_size_bytes) / 1048576.0)   AS total_size,
+            printf('%.1f KB', AVG(body_size_bytes) / 1024.0)      AS avg_size,
+            SUM(body_size_bytes)                                    AS total_bytes
+          FROM   messages
+          WHERE  from_email IS NOT NULL
+          GROUP  BY from_email
+          ORDER  BY total_bytes DESC
+          LIMIT  100
+
       # -----------------------------------------------------------------------
       # Inbox / flags
       # -----------------------------------------------------------------------
@@ -154,6 +244,20 @@ databases:
           WHERE  is_starred = 1
           ORDER  BY date_ts DESC
           LIMIT  500
+
+      oldest_unread:
+        title: "Oldest unread messages"
+        sql: |
+          SELECT
+            datetime(date_ts, 'unixepoch')  AS date,
+            from_email,
+            subject,
+            labels,
+            message_id
+          FROM   messages
+          WHERE  is_unread = 1
+          ORDER  BY date_ts ASC
+          LIMIT  200
 
       # -----------------------------------------------------------------------
       # Threads
@@ -209,6 +313,38 @@ databases:
           WHERE  has_attachments = 1
           ORDER  BY date_ts DESC
           LIMIT  500
+
+      attachment_types:
+        title: "Attachment file types (by extension)"
+        sql: |
+          SELECT
+            LOWER(
+              CASE WHEN INSTR(value, '.') > 0
+                THEN SUBSTR(value, INSTR(value, '.') + 1)
+                ELSE '(no extension)'
+              END
+            )                   AS extension,
+            COUNT(*)            AS count
+          FROM   messages, json_each(attachment_names)
+          WHERE  attachment_names IS NOT NULL
+          GROUP  BY extension
+          ORDER  BY count DESC
+          LIMIT  50
+
+      # -----------------------------------------------------------------------
+      # Labels
+      # -----------------------------------------------------------------------
+
+      by_label:
+        title: "Message count by Gmail label"
+        sql: |
+          SELECT
+            value               AS label,
+            COUNT(*)            AS message_count
+          FROM   messages, json_each(labels)
+          WHERE  labels IS NOT NULL
+          GROUP  BY label
+          ORDER  BY message_count DESC
 
       # -----------------------------------------------------------------------
       # Sent mail
