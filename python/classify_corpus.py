@@ -6,7 +6,7 @@ or more Ollama models, and writes results to classifications.db.  Human
 corrections are captured via --review-uncertain and stored in corrections.jsonl.
 
 Stage 2: Single-model baseline
-  uv run python classify_corpus.py --db ~/gmail.db --models qwen3.5:4b-mlx
+  uv run python classify_corpus.py --db ~/gmail.db --models qwen2.5:7b
 
 Stage 3: Three-model adversarial run (batch-by-model for efficiency)
   uv run python classify_corpus.py --db ~/gmail.db
@@ -65,7 +65,7 @@ from sanitize import build_user_turn, sanitize
 # Default models (Stage 3)
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODELS = ["gemma4:e2b-mlx", "qwen3.5:4b-mlx", "llama3.2:3b"]
+DEFAULT_MODELS = ["gemma3:4b", "qwen2.5:7b", "llama3.2:3b"]
 
 # Uncertain rate threshold: if more than this fraction of the stratified sample
 # comes back uncertain from a single model, the prompt needs refinement before
@@ -77,10 +77,11 @@ UNCERTAIN_RATE_WARN = 0.30
 # scenario from silently writing thousands of entries to errors.jsonl.
 CIRCUIT_BREAKER_THRESHOLD = 5
 
-# Maximum tokens the model may produce per response.  The JSON label line is
-# ~60 tokens; capping at 120 prevents runaway generation without risk of
-# truncating any valid response.
-MAX_OUTPUT_TOKENS = 120
+# Maximum tokens the model may produce per response.  Thinking-mode models
+# (gemma4, qwen3.5) consume num_predict budget on internal chain-of-thought
+# before producing any content; 1024 gives ~600 thinking tokens + the ~60-token
+# JSON label line.  Non-thinking models (llama3.2) finish well under 120.
+MAX_OUTPUT_TOKENS = 1024
 
 # Default concurrent Ollama requests per model pass (asyncio semaphore).
 # Match OLLAMA_NUM_PARALLEL on the server for best throughput.
@@ -234,6 +235,26 @@ def startup_check(client: ollama.Client, required_models: list[str], host: str) 
 
 
 # ---------------------------------------------------------------------------
+# JSON response parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_label_response(raw: str) -> dict[str, Any]:
+    """Parse a model's JSON label response, stripping markdown code fences if present.
+
+    Some models (e.g. gemma3) wrap their JSON in ```json...``` even when told not to.
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        nl = text.find("\n")
+        text = text[nl + 1 :] if nl >= 0 else text[3:]  # drop opening fence line
+        if text.endswith("```"):
+            text = text[:-3].rstrip()  # drop closing fence (own line or inline)
+        text = text.strip()
+    return json.loads(text)
+
+
+# ---------------------------------------------------------------------------
 # Single-message classification
 # ---------------------------------------------------------------------------
 
@@ -250,7 +271,7 @@ def classify_message(
 
     Args:
         client:      Ollama client (configured with OLLAMA_HOST).
-        model:       Ollama model tag (e.g. "qwen3.5:4b-mlx").
+        model:       Ollama model tag (e.g. "qwen2.5:7b").
         prompt:      Loaded prompt YAML dict (system_prompt, etc.).
         message:     Dict with keys: message_id, from_email, from_name, subject,
                      date_str, body_text.
@@ -288,7 +309,7 @@ def classify_message(
         }
 
     try:
-        parsed = json.loads(raw.strip())
+        parsed = _parse_label_response(raw)
         label = parsed.get("label", "uncertain").lower()
         if label not in ("keep", "delete", "uncertain"):
             label = "uncertain"
@@ -350,7 +371,7 @@ async def _classify_one_async(
             }
 
     try:
-        parsed = json.loads(raw.strip())
+        parsed = _parse_label_response(raw)
         label = parsed.get("label", "uncertain").lower()
         if label not in ("keep", "delete", "uncertain"):
             label = "uncertain"
@@ -656,7 +677,7 @@ def run_corpus_classification(
                 print(
                     f"\nWARNING: Uncertain rate {rate:.1%} exceeds"
                     f" {UNCERTAIN_RATE_WARN:.0%} threshold.\n"
-                    "  Refine the prompt (bump to v1.1.0) before the three-model Stage 3 pass.\n"
+                    "  Refine the prompt (bump to v1.3.0) before the three-model Stage 3 pass.\n"
                     "  High uncertain rates from one model mean the prompt is too coarse."
                 )
     else:
@@ -857,8 +878,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--prompt-version",
-        default="v1.0.0",
-        help="Prompt version to use (default: v1.0.0)",
+        default="v1.2.0",
+        help="Prompt version to use (default: v1.2.0)",
     )
     parser.add_argument(
         "--prompts-dir",
