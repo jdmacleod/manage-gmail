@@ -6,7 +6,7 @@ or more Ollama models, and writes results to classifications.db.  Human
 corrections are captured via --review-uncertain and stored in corrections.jsonl.
 
 Stage 2: Single-model baseline
-  uv run python classify_corpus.py --db ~/gmail.db --models qwen3.5:9b
+  uv run python classify_corpus.py --db ~/gmail.db --models qwen3.5:4b-mlx
 
 Stage 3: Three-model adversarial run (batch-by-model for efficiency)
   uv run python classify_corpus.py --db ~/gmail.db
@@ -26,14 +26,27 @@ Remote Ollama:
   uv run python classify_corpus.py --db ~/gmail.db
 
 Loop order (Stage 3): all emails through model A, then all through model B,
-then model C.  Each model is loaded once per pass (keep_alive=-1 within pass,
-keep_alive=0 after the last message in the pass).  This is 2-4× faster than
-the per-email A+B+C loop on a 50K corpus.
+then model C.  Each model is loaded once per pass (keep_alive=-1 within pass).
+This is 2-4× faster than the per-email A+B+C loop on a 50K corpus.
+
+Concurrency (within each model pass):
+  Requests are sent concurrently using asyncio + ollama.AsyncClient.
+  Default concurrency is 4 — match OLLAMA_NUM_PARALLEL on the Ollama server
+  for best throughput (e.g. OLLAMA_NUM_PARALLEL=4 ollama serve).
+  Tune with --concurrency:
+    uv run python classify_corpus.py --db ~/gmail.db --concurrency 8
+
+Output token cap:
+  Each request caps model output at MAX_OUTPUT_TOKENS (120 tokens).  The JSON
+  label line is ~60 tokens; the cap prevents runaway generation without cutting
+  off any valid response.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -52,7 +65,7 @@ from sanitize import build_user_turn, sanitize
 # Default models (Stage 3)
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODELS = ["qwen3.5:9b", "gemma4:e4b", "mistral-small3.2:latest"]
+DEFAULT_MODELS = ["gemma4:e2b-mlx", "qwen3.5:4b-mlx", "llama3.2:3b"]
 
 # Uncertain rate threshold: if more than this fraction of the stratified sample
 # comes back uncertain from a single model, the prompt needs refinement before
@@ -63,6 +76,15 @@ UNCERTAIN_RATE_WARN = 0.30
 # errors (connection failures, not JSON parse errors). Prevents a host-down
 # scenario from silently writing thousands of entries to errors.jsonl.
 CIRCUIT_BREAKER_THRESHOLD = 5
+
+# Maximum tokens the model may produce per response.  The JSON label line is
+# ~60 tokens; capping at 120 prevents runaway generation without risk of
+# truncating any valid response.
+MAX_OUTPUT_TOKENS = 120
+
+# Default concurrent Ollama requests per model pass (asyncio semaphore).
+# Match OLLAMA_NUM_PARALLEL on the server for best throughput.
+DEFAULT_CONCURRENCY = 4
 
 # Body character limit for the --review-uncertain display (shorter than model limit)
 REVIEW_BODY_CHARS = 400
@@ -228,7 +250,7 @@ def classify_message(
 
     Args:
         client:      Ollama client (configured with OLLAMA_HOST).
-        model:       Ollama model tag (e.g. "qwen3.5:9b").
+        model:       Ollama model tag (e.g. "qwen3.5:4b-mlx").
         prompt:      Loaded prompt YAML dict (system_prompt, etc.).
         message:     Dict with keys: message_id, from_email, from_name, subject,
                      date_str, body_text.
@@ -253,7 +275,7 @@ def classify_message(
                 {"role": "system", "content": prompt["system_prompt"]},
                 {"role": "user", "content": user_turn},
             ],
-            options={"keep_alive": keep_alive},
+            options={"keep_alive": keep_alive, "num_predict": MAX_OUTPUT_TOKENS},
         )
         raw = response.message.content or ""
     except Exception as exc:
@@ -285,6 +307,174 @@ def classify_message(
             "raw_response": raw,
             "error": "json_parse_error",
         }
+
+
+# ---------------------------------------------------------------------------
+# Async classification helpers (corpus batch pass)
+# ---------------------------------------------------------------------------
+
+
+async def _classify_one_async(
+    client: ollama.AsyncClient,
+    sem: asyncio.Semaphore,
+    model: str,
+    prompt: dict[str, Any],
+    message: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Classify one message asynchronously; returns (message, result)."""
+    from_addr = message.get("from_email") or message.get("from_name") or "(unknown)"
+    subject = message.get("subject") or "(no subject)"
+    date_str = message.get("date_str") or ""
+    body_text = message.get("body_text") or ""
+    sanitized = sanitize(body_text, strip_html=False)
+    user_turn = build_user_turn(from_addr, subject, date_str, sanitized)
+
+    async with sem:
+        try:
+            response = await client.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": prompt["system_prompt"]},
+                    {"role": "user", "content": user_turn},
+                ],
+                options={"keep_alive": -1, "num_predict": MAX_OUTPUT_TOKENS},
+            )
+            raw = response.message.content or ""
+        except Exception as exc:
+            return message, {
+                "label": "uncertain",
+                "confidence": None,
+                "reason": None,
+                "raw_response": None,
+                "error": str(exc),
+            }
+
+    try:
+        parsed = json.loads(raw.strip())
+        label = parsed.get("label", "uncertain").lower()
+        if label not in ("keep", "delete", "uncertain"):
+            label = "uncertain"
+        return message, {
+            "label": label,
+            "confidence": parsed.get("confidence"),
+            "reason": parsed.get("reason"),
+            "raw_response": raw,
+            "error": None,
+        }
+    except json.JSONDecodeError:
+        return message, {
+            "label": "uncertain",
+            "confidence": None,
+            "reason": None,
+            "raw_response": raw,
+            "error": "json_parse_error",
+        }
+
+
+async def _classify_pass_async(
+    host: str,
+    model: str,
+    prompt: dict[str, Any],
+    pending: list[dict[str, Any]],
+    concurrency: int,
+    *,
+    errors_path: Path,
+    cls_conn: sqlite3.Connection,
+    version: str,
+    pass_start: float,
+    _client: ollama.AsyncClient | None = None,
+) -> None:
+    """Run one model's full pass concurrently.
+
+    Sends up to `concurrency` requests at once (asyncio.Semaphore).  Results
+    are written to cls_conn as they arrive.  After all tasks complete the model
+    is unloaded by sending a final keep_alive=0 request.
+    """
+    client = _client if _client is not None else ollama.AsyncClient(host=host)
+    sem = asyncio.Semaphore(concurrency)
+    total = len(pending)
+    done_count = 0
+    consecutive_errors = 0
+    last_error: str | None = None
+
+    tasks = [
+        asyncio.create_task(_classify_one_async(client, sem, model, prompt, msg)) for msg in pending
+    ]
+
+    try:
+        for coro in asyncio.as_completed(tasks):
+            msg, result = await coro
+            now = datetime.now(UTC).isoformat()
+            done_count += 1
+
+            if result["error"] and result["raw_response"] is None:
+                consecutive_errors += 1
+                last_error = result["error"]
+                with errors_path.open("a") as ef:
+                    ef.write(
+                        json.dumps(
+                            {
+                                "message_id": msg["message_id"],
+                                "model": model,
+                                "error": result["error"],
+                                "ts": now,
+                            }
+                        )
+                        + "\n"
+                    )
+                if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD:
+                    for task in tasks:
+                        task.cancel()
+                    cls_conn.commit()
+                    print(
+                        f"\nERROR: {consecutive_errors} consecutive Ollama errors on"
+                        f" model {model!r} — aborting.\n"
+                        f"  Last error: {last_error}\n"
+                        f"  Host: {host}\n"
+                        "  Check that Ollama is still running and OLLAMA_HOST is correct.\n"
+                        "  Re-run the same command to resume from where it stopped.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                continue
+
+            consecutive_errors = 0
+
+            cls_conn.execute(
+                """
+                INSERT OR REPLACE INTO classifications
+                    (message_id, model, prompt_version, label, confidence,
+                     reason, raw_response, classified_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    msg["message_id"],
+                    model,
+                    version,
+                    result["label"],
+                    result["confidence"],
+                    result["reason"],
+                    result["raw_response"],
+                    now,
+                ),
+            )
+
+            if done_count % 50 == 0:
+                cls_conn.commit()
+                elapsed = time.monotonic() - pass_start
+                progress = _fmt_progress(done_count, total, elapsed)
+                print(f"  {model}: {progress}", flush=True)
+
+    finally:
+        # Unload the model after this pass (or on circuit-breaker abort).
+        with contextlib.suppress(Exception):
+            await client.chat(
+                model=model,
+                messages=[{"role": "user", "content": ""}],
+                options={"keep_alive": 0, "num_predict": 1},
+            )
+
+    cls_conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -343,16 +533,21 @@ def _fmt_progress(done: int, total: int, elapsed: float) -> str:
 
 def run_corpus_classification(
     args: argparse.Namespace,
-    client: ollama.Client,
     gmail_conn: sqlite3.Connection,
     cls_conn: sqlite3.Connection,
     prompt: dict[str, Any],
+    *,
+    _async_client: ollama.AsyncClient | None = None,
 ) -> None:
     """Run the batch-by-model corpus classification loop.
 
     Loop order: all messages through model A, then all through model B, then C.
     Each model is loaded once per pass.  Already-classified (model, message_id,
     prompt_version) triples are skipped for resumability.
+
+    Within each pass, up to args.concurrency requests are sent concurrently via
+    asyncio + ollama.AsyncClient.  Set OLLAMA_NUM_PARALLEL on the Ollama server
+    to the same value for maximum GPU utilisation.
     """
     version = prompt["version"]
     models = args.models
@@ -423,75 +618,22 @@ def run_corpus_classification(
         resume_note = f" (resuming from {already})" if already else ""
         print(f"{model}: classifying {len(pending)} messages{resume_note} ...", flush=True)
 
-        consecutive_errors = 0
-        last_error: str | None = None
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         pass_start = time.monotonic()
-
-        for i, msg in enumerate(pending):
-            is_last = i == len(pending) - 1
-            ka = 0 if is_last else -1
-
-            result = classify_message(client, model, prompt, msg, keep_alive=ka)
-            now = datetime.now(UTC).isoformat()
-
-            if result["error"] and result["raw_response"] is None:
-                # Hard Ollama error (connection failure, not a JSON parse error)
-                consecutive_errors += 1
-                last_error = result["error"]
-                with errors_path.open("a") as ef:
-                    ef.write(
-                        json.dumps(
-                            {
-                                "message_id": msg["message_id"],
-                                "model": model,
-                                "error": result["error"],
-                                "ts": now,
-                            }
-                        )
-                        + "\n"
-                    )
-                if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD:
-                    cls_conn.commit()
-                    print(
-                        f"\nERROR: {consecutive_errors} consecutive Ollama errors on"
-                        f" model {model!r} — aborting.\n"
-                        f"  Last error: {last_error}\n"
-                        f"  Host: {os.environ.get('OLLAMA_HOST', 'http://localhost:11434')}\n"
-                        "  Check that Ollama is still running and OLLAMA_HOST is correct.\n"
-                        "  Re-run the same command to resume from where it stopped.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-                continue
-
-            consecutive_errors = 0  # reset on any successful response
-
-            cls_conn.execute(
-                """
-                INSERT OR REPLACE INTO classifications
-                    (message_id, model, prompt_version, label, confidence,
-                     reason, raw_response, classified_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    msg["message_id"],
-                    model,
-                    version,
-                    result["label"],
-                    result["confidence"],
-                    result["reason"],
-                    result["raw_response"],
-                    now,
-                ),
+        asyncio.run(
+            _classify_pass_async(
+                host,
+                model,
+                prompt,
+                pending,
+                args.concurrency,
+                errors_path=errors_path,
+                cls_conn=cls_conn,
+                version=version,
+                pass_start=pass_start,
+                _client=_async_client,
             )
-
-            if (i + 1) % 50 == 0:
-                cls_conn.commit()
-                elapsed = time.monotonic() - pass_start
-                progress = _fmt_progress(i + 1, len(pending), elapsed)
-                print(f"  {model}: {progress}", flush=True)
-
-        cls_conn.commit()
+        )
         elapsed = time.monotonic() - pass_start
         print(f"{model}: done — {len(pending)} messages in {_fmt_duration(elapsed)}.")
 
@@ -736,6 +878,16 @@ def main() -> None:
         action="store_true",
         help="Interactive loop: review AI/Uncertain messages and capture corrections",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        metavar="N",
+        help=(
+            f"Concurrent Ollama requests per model pass (default: {DEFAULT_CONCURRENCY})."
+            " Match OLLAMA_NUM_PARALLEL on the server for best throughput."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -770,7 +922,7 @@ def main() -> None:
         if args.review_uncertain:
             run_review_uncertain(args, gmail_conn, cls_conn, prompt)
         else:
-            run_corpus_classification(args, client, gmail_conn, cls_conn, prompt)
+            run_corpus_classification(args, gmail_conn, cls_conn, prompt)
     finally:
         gmail_conn.close()
         cls_conn.close()
