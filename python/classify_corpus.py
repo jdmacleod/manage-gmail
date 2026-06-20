@@ -6,7 +6,7 @@ or more Ollama models, and writes results to classifications.db.  Human
 corrections are captured via --review-uncertain and stored in corrections.jsonl.
 
 Stage 2: Single-model baseline
-  uv run python classify_corpus.py --db ~/gmail.db --models qwen2.5:7b
+  uv run python classify_corpus.py --db ~/gmail.db --models qwen2.5:14b
 
 Stage 3: Three-model adversarial run (batch-by-model for efficiency)
   uv run python classify_corpus.py --db ~/gmail.db
@@ -37,9 +37,9 @@ Concurrency (within each model pass):
     uv run python classify_corpus.py --db ~/gmail.db --concurrency 8
 
 Output token cap:
-  Each request caps model output at MAX_OUTPUT_TOKENS (120 tokens).  The JSON
-  label line is ~60 tokens; the cap prevents runaway generation without cutting
-  off any valid response.
+  Each request caps model output at MAX_OUTPUT_TOKENS (1024 tokens).  Reasoning
+  models (phi4-reasoning) use the budget for chain-of-thought; non-reasoning
+  models produce the ~60-token JSON label line well under the cap.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ from sanitize import build_user_turn, sanitize
 # Default models (Stage 3)
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODELS = ["gemma3:4b", "qwen2.5:7b", "llama3.2:3b"]
+DEFAULT_MODELS = ["qwen2.5:14b", "phi4-reasoning:14b", "gemma3:12b"]
 
 # Uncertain rate threshold: if more than this fraction of the stratified sample
 # comes back uncertain from a single model, the prompt needs refinement before
@@ -78,9 +78,10 @@ UNCERTAIN_RATE_WARN = 0.30
 CIRCUIT_BREAKER_THRESHOLD = 5
 
 # Maximum tokens the model may produce per response.  Thinking-mode models
-# (gemma4, qwen3.5) consume num_predict budget on internal chain-of-thought
-# before producing any content; 1024 gives ~600 thinking tokens + the ~60-token
-# JSON label line.  Non-thinking models (llama3.2) finish well under 120.
+# consume num_predict budget on internal chain-of-thought before producing any
+# content; 1024 gives ~600 thinking tokens + the ~60-token JSON label line.
+# Non-thinking models (qwen2.5, gemma3) finish well under 120; phi4-reasoning
+# uses a thinking budget similar to other reasoning models.
 MAX_OUTPUT_TOKENS = 1024
 
 # Default concurrent Ollama requests per model pass (asyncio semaphore).
@@ -240,18 +241,48 @@ def startup_check(client: ollama.Client, required_models: list[str], host: str) 
 
 
 def _parse_label_response(raw: str) -> dict[str, Any]:
-    """Parse a model's JSON label response, stripping markdown code fences if present.
+    """Parse a model's JSON label response.
 
-    Some models (e.g. gemma3) wrap their JSON in ```json...``` even when told not to.
+    Handles two common model output quirks:
+    - Markdown code fences (```json...```) wrapping the JSON
+    - Truncated output where the reason string is missing its closing quote,
+      e.g. '{"label":"delete","reason":"text (no-reply@)}' — recovered by
+      truncating at the last complete closing brace.
     """
     text = raw.strip()
+
+    # Strip markdown code fences
     if text.startswith("```"):
         nl = text.find("\n")
         text = text[nl + 1 :] if nl >= 0 else text[3:]  # drop opening fence line
         if text.endswith("```"):
             text = text[:-3].rstrip()  # drop closing fence (own line or inline)
         text = text.strip()
-    return json.loads(text)
+
+    # Fast path: try parsing as-is
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Recovery: two common truncation patterns from small models.
+    last_brace = text.rfind("}")
+    if last_brace > 0:
+        # Pattern A: trailing chars after the closing brace (e.g. stray quote).
+        try:
+            return json.loads(text[: last_brace + 1])
+        except json.JSONDecodeError:
+            pass
+
+        # Pattern B: closing quote missing before the final brace, e.g.
+        #   "reason": "text (no-reply@)}   →   "reason": "text (no-reply@)"}
+        if text[last_brace - 1] != '"':
+            try:
+                return json.loads(text[:last_brace] + '"' + text[last_brace:])
+            except json.JSONDecodeError:
+                pass
+
+    raise json.JSONDecodeError("no closing brace found", text, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +708,7 @@ def run_corpus_classification(
                 print(
                     f"\nWARNING: Uncertain rate {rate:.1%} exceeds"
                     f" {UNCERTAIN_RATE_WARN:.0%} threshold.\n"
-                    "  Refine the prompt (bump to v1.3.0) before the three-model Stage 3 pass.\n"
+                    "  Refine the prompt (bump to v1.6.0) before the three-model Stage 3 pass.\n"
                     "  High uncertain rates from one model mean the prompt is too coarse."
                 )
     else:
@@ -878,8 +909,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--prompt-version",
-        default="v1.2.0",
-        help="Prompt version to use (default: v1.2.0)",
+        default="v1.5.0",
+        help="Prompt version to use (default: v1.5.0)",
     )
     parser.add_argument(
         "--prompts-dir",
