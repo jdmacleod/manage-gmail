@@ -25,9 +25,13 @@
 # label_reference.sh) — see config/keep_rules.local.example.tsv.
 /config/keep_rules.local.tsv
 
+# Industry/org-specific sender rules for prune.sh — personal professional
+# affiliations; see config/prune_industry_senders.local.example.conf.
+/config/prune_industry_senders.local.conf
+
 # Python tooling (python/)
 # The lockfile (uv.lock) IS committed — it pins exact dependency versions.
-# The .venv and compiled SQLite database are not.
+# The .venv and compiled SQLite databases are not.
 /python/.venv/
 /python/__pycache__/
 /python/**/__pycache__/
@@ -36,7 +40,16 @@
 /python/gmail.db-shm
 /python/gmail.db-wal
 
+# Classification results — contain real email content (message IDs, subjects,
+# sender addresses, model reasoning quoting email body text). Never commit.
+/python/classifications.db
+/python/disagreements.jsonl
+/python/errors.jsonl
+
 # Tool caches
 /python/.mypy_cache/
 /python/.ruff_cache/
 /python/.pytest_cache/
+
+# gstack skill outputs (security reports, learnings, decision logs) — local only.
+/.gstack/

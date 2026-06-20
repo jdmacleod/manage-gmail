@@ -55,6 +55,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGFILE="$SCRIPT_DIR/../PRUNE_LOG.md"
 CONTACTS_FILE="$SCRIPT_DIR/../contacts_emails.txt"
 NOISY_SENDERS_FILE="$SCRIPT_DIR/../noisy_senders.txt"
+INDUSTRY_SENDERS_FILE="$SCRIPT_DIR/../config/prune_industry_senders.local.conf"
 AUDIT_LOG="$SCRIPT_DIR/../audit_log.jsonl"
 REFERENCE_STAMP="$SCRIPT_DIR/../.label_reference_last_run"
 
@@ -237,6 +238,27 @@ build_subject_exclusion() {
   echo "-subject:($joined)"
 }
 
+# Loads config/prune_industry_senders.local.conf into parallel arrays:
+#   INDUSTRY_NAMES  — display label for each rule (e.g. "Old VES/guild news")
+#   INDUSTRY_ADDRS  — space-separated "addr1 addr2 ..." for each rule
+# File format: one rule per line, label<TAB>addr1 addr2 ...
+# Blank lines and lines starting with # are ignored.
+# If the file does not exist, both arrays remain empty (no-op).
+INDUSTRY_NAMES=()
+INDUSTRY_ADDRS=()
+parse_industry_senders() {
+  [[ -s "$INDUSTRY_SENDERS_FILE" ]] || return 0
+  local line label addrs
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    label="${line%%$'\t'*}"
+    addrs="${line#*$'\t'}"
+    [[ -z "$label" || -z "$addrs" || "$label" == "$addrs" ]] && continue
+    INDUSTRY_NAMES+=("$label")
+    INDUSTRY_ADDRS+=("$addrs")
+  done < "$INDUSTRY_SENDERS_FILE"
+}
+
 # Prints this category's runtime and (unless --dry-run) appends a log entry
 # for it to PRUNE_LOG.md. Relies on $name, $q, $cat_start_ts from the loop.
 finish_category() {
@@ -295,7 +317,6 @@ NAMES=(
   "Old newsletters/digests - Medium, Coursera, Glassdoor"
   "Old news alerts that are not starred, Google, WSJ"
   "Old news that are not starred, WSJ"
-  "Old industry news that are not starred, VES, Animation Guild"
   "Old read mail"
   "Old unread mail"
 )
@@ -311,10 +332,23 @@ QUERIES=(
   "category:updates older_than:${OLD_UPDATES_AGE} from:(noreply@medium.com OR coursera.org OR glassdoor.com) has:nouserlabels -is:starred -label:Reference -in:trash"
   "category:updates older_than:${OLD_UPDATES_AGE} subject:(\"Google Alert\" OR \"WSJ News Alert\") -is:starred -in:trash"
   "category:updates older_than:${OLD_UPDATES_AGE} from:access.interactive.wsj.com -is:starred -in:trash"
-  "in:inbox older_than:${OLD_UPDATES_AGE} from:(info@visualeffectssociety.com OR losangeles.vesglobal.org OR info@animationguild.org OR promotions@tag839.org OR no-replyasifa-hollywood.org) -is:starred -in:trash"
   "is:read -is:starred -is:important -label:Reference -in:trash -in:sent -in:chats older_than:${OLD_READ_AGE} smaller:${OLD_READ_SIZE}"
   "is:unread -is:starred -is:important -label:Reference -in:trash -category:primary older_than:${OLD_UNREAD_AGE}"
 )
+
+# Industry/org-specific sender rules: loaded from
+# config/prune_industry_senders.local.conf (gitignored — see the .example
+# file for format). Each rule becomes its own named category with a query
+# targeting the listed sender addresses. Use this for newsletters, digests, or
+# low-value mail from specific trade organisations or industry groups.
+parse_industry_senders
+for i in "${!INDUSTRY_NAMES[@]}"; do
+  _ind_label="${INDUSTRY_NAMES[$i]}"
+  _ind_addrs="${INDUSTRY_ADDRS[$i]}"
+  _ind_from=$(echo "$_ind_addrs" | tr ' ' '\n' | paste -sd' ' - | sed 's/ / OR /g')
+  NAMES+=("$_ind_label")
+  QUERIES+=("in:inbox older_than:${OLD_UPDATES_AGE} from:($_ind_from) -is:starred -in:trash")
+done
 
 # Engagement-based categories: senders you've curated into noisy_senders.txt
 # (via find_noisy_senders.sh) get pruned more aggressively when their mail
