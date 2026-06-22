@@ -131,7 +131,7 @@ logic. Unreliable as an adversarial check.
 
 ### Generation 4 (current — not yet evaluated)
 
-**qwen2.5:14b, phi4-reasoning:14b, gemma3:12b** — default prompt v1.5.0
+**qwen2.5:14b, gpt-oss:20b, gemma3:12b** — default prompt v1.5.0
 
 #### Rationale
 
@@ -140,15 +140,12 @@ logic. Unreliable as an adversarial check.
   shows strong instruction-following improvement between 7B and 14B. The 7B's
   false-delete pattern on non-conversational-but-valid KEEP categories is the
   target failure to fix.
-- **llama3.1:8b → phi4-reasoning:14b**: Microsoft Phi-4 reasoning model at 14B.
-  Different architecture and training data from both gemma (Google) and qwen
-  (Alibaba), preserving ensemble diversity. Strong at multi-criteria instruction
-  following, which was llama3.1:8b's core weakness. The reasoning variant is
-  expected to handle nuanced classification rules more consistently than
-  base llama.
-
-**Note:** phi4-reasoning:14b is a thinking-mode model. `MAX_OUTPUT_TOKENS = 1024`
-provides budget for chain-of-thought reasoning before the JSON output line.
+- **llama3.1:8b → gpt-oss:20b**: Open-source GPT-family model at 20B. Different
+  architecture and training lineage from both gemma (Google) and qwen (Alibaba),
+  preserving ensemble diversity. Evaluated after phi4-mini-reasoning:3.8b was
+  retired for excessive inference latency (≤20 tok/s). gpt-oss:20b targets the
+  same llama3.1:8b weaknesses — stable multi-criteria instruction following — at
+  a competitive throughput.
 
 #### Status
 
@@ -177,7 +174,7 @@ All prompts in `python/prompts/`. Default is always the latest version.
   account-change alerts) as financial records (KEEP). Likely correct label is
   DELETE. Low priority — only 2–3 cases per 230-email sample.
 - **Platform-mediated personal messages via bulk relay**: llama3.1:8b
-  false-deleted these in Gen 3; unknown whether phi4-reasoning:14b handles them
+  false-deleted these in Gen 3; unknown whether gpt-oss:20b handles them
   correctly.
 - **qwen "automated content" heuristic**: unknown whether qwen2.5:14b carries
   forward qwen2.5:7b's false-delete pattern on meeting invitations and employment

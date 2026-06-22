@@ -399,15 +399,13 @@ def test_startup_check_model_missing(capsys):
 def test_startup_check_all_models_present():
     client = MagicMock()
     models_list = []
-    for tag in ["qwen2.5:14b", "gemma3:12b", "phi4-reasoning:14b"]:
+    for tag in ["qwen2.5:14b", "gemma3:12b", "gpt-oss:20b"]:
         m = MagicMock()
         m.model = tag
         models_list.append(m)
     client.list.return_value.models = models_list
     # Should not raise
-    startup_check(
-        client, ["qwen2.5:14b", "gemma3:12b", "phi4-reasoning:14b"], "http://localhost:11434"
-    )
+    startup_check(client, ["qwen2.5:14b", "gemma3:12b", "gpt-oss:20b"], "http://localhost:11434")
 
 
 # ---------------------------------------------------------------------------

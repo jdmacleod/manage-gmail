@@ -2,4 +2,4 @@
 
 ## LLM model candidates for future evaluation
 
-- [ ] `gpt-oss:20b` — evaluate as potential replacement or addition to the three-model ensemble
+- [ ] phi4-reasoning:14b — was too slow at 3.8b mini; full 14b may be viable if throughput improves

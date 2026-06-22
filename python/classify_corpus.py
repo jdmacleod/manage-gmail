@@ -37,9 +37,8 @@ Concurrency (within each model pass):
     uv run python classify_corpus.py --db ~/gmail.db --concurrency 8
 
 Output token cap:
-  Each request caps model output at MAX_OUTPUT_TOKENS (1024 tokens).  Reasoning
-  models (phi4-reasoning) use the budget for chain-of-thought; non-reasoning
-  models produce the ~60-token JSON label line well under the cap.
+  Each request caps model output at MAX_OUTPUT_TOKENS (1024 tokens).  Models
+  produce the ~60-token JSON label line well under the cap.
 """
 
 from __future__ import annotations
@@ -65,7 +64,7 @@ from sanitize import build_user_turn, sanitize
 # Default models (Stage 3)
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODELS = ["qwen2.5:14b", "phi4-reasoning:14b", "gemma3:12b"]
+DEFAULT_MODELS = ["qwen2.5:14b", "gpt-oss:20b", "gemma3:12b"]
 
 # Uncertain rate threshold: if more than this fraction of the stratified sample
 # comes back uncertain from a single model, the prompt needs refinement before
@@ -80,8 +79,7 @@ CIRCUIT_BREAKER_THRESHOLD = 5
 # Maximum tokens the model may produce per response.  Thinking-mode models
 # consume num_predict budget on internal chain-of-thought before producing any
 # content; 1024 gives ~600 thinking tokens + the ~60-token JSON label line.
-# Non-thinking models (qwen2.5, gemma3) finish well under 120; phi4-reasoning
-# uses a thinking budget similar to other reasoning models.
+# All current models (qwen2.5, gpt-oss, gemma3) finish well under the cap.
 MAX_OUTPUT_TOKENS = 1024
 
 # Default concurrent Ollama requests per model pass (asyncio semaphore).
