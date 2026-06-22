@@ -706,7 +706,7 @@ def run_corpus_classification(
                 print(
                     f"\nWARNING: Uncertain rate {rate:.1%} exceeds"
                     f" {UNCERTAIN_RATE_WARN:.0%} threshold.\n"
-                    "  Refine the prompt (bump to v1.6.0) before the three-model Stage 3 pass.\n"
+                    "  Refine the prompt (bump to v1.8.0) before the three-model Stage 3 pass.\n"
                     "  High uncertain rates from one model mean the prompt is too coarse."
                 )
     else:
@@ -907,8 +907,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--prompt-version",
-        default="v1.5.0",
-        help="Prompt version to use (default: v1.5.0)",
+        default="v1.7.0",
+        help="Prompt version to use (default: v1.7.0)",
     )
     parser.add_argument(
         "--prompts-dir",
