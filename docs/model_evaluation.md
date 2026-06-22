@@ -24,6 +24,7 @@ Disagreements are appended to `python/disagreements.jsonl` and stored in full in
 | v1.3.0 | gemma3:12b, qwen2.5:7b, llama3.1:8b | 230 | 12 | **5.2%** | Model upgrade to 12b/8b; best rate achieved |
 | v1.4.0 | gemma3:12b, qwen2.5:7b, llama3.1:8b | 230 | 18 | 7.8% | Prompt NOTEs ignored by llama; regression |
 | v1.5.0 | gemma3:12b, qwen2.5:7b, llama3.1:8b | 230 | 14 | 6.1% | Partial recovery; diminishing prompt returns |
+| v1.5.0 | gemma3:12b, gpt-oss:20b, qwen2.5:14b | 500 | 19 | **3.8%** | Gen 4 first run; new best overall |
 
 ---
 
@@ -129,7 +130,7 @@ logic. Unreliable as an adversarial check.
 
 ---
 
-### Generation 4 (current — not yet evaluated)
+### Generation 4 (current)
 
 **qwen2.5:14b, gpt-oss:20b, gemma3:12b** — default prompt v1.5.0
 
@@ -147,10 +148,79 @@ logic. Unreliable as an adversarial check.
   same llama3.1:8b weaknesses — stable multi-criteria instruction following — at
   a competitive throughput.
 
-#### Status
+#### Cumulative outlier votes (500 emails, prompt v1.5.0)
 
-Models pulled, awaiting first classification run. Target: ≤5% disagreement rate
-on a 230-email sample to match Gen 3's best (v1.3.0: 5.2%).
+19 unique disagreements (22 raw records; 3 Schwab message IDs appeared twice due
+to a re-run overlap).
+
+| Model | Outlier votes | False-deletes | False-keeps | Uncertain |
+|-------|-------------:|-------------:|------------:|----------:|
+| gemma3:12b | 5 | 0 | 5 | 0 |
+| gpt-oss:20b | 7 | 1 | 4 | 2 |
+| qwen2.5:14b | 7 | 4 | 3 | 0 |
+
+#### gemma3:12b — retained
+
+Fewest outlier votes in the Gen 4 run. All errors are false-keeps, but the
+pattern has expanded beyond financial institution alerts (the known Gen 3 failure
+mode) to a broader category of transactional notifications that resemble records:
+
+- **Financial institution alerts**: account-change confirmations, account
+  verification emails, and marketing emails from financial institutions → KEEP.
+  Majority correct label: DELETE.
+- **E-commerce delivery updates**: order delivery notifications → KEEP. Correct
+  label: DELETE.
+- **Platform arrival countdowns**: "X is arriving in N days" countdown emails
+  from a home-exchange platform → KEEP. Correct label: DELETE.
+- **Professional network community posts**: introduction posts on a VFX/3D
+  community mailing list → KEEP. Correct label: DELETE.
+
+Zero false-deletes. Carry forward to Gen 5 or next prompt iteration.
+
+#### gpt-oss:20b — under evaluation
+
+7 outlier votes — tied with qwen2.5:14b.
+
+**Persistent false-keeps:**
+- LinkedIn "I want to connect" connection-request emails: 3 cases, all from the
+  same narrow category. gpt-oss votes KEEP while both other models vote DELETE.
+  Systematic blind spot — LinkedIn connection requests are clearly transactional
+  automated mail.
+- ISP welcome/onboarding email: 1 false-keep. Correct label: DELETE.
+
+**Uncertain outputs:**
+- Forwarded personal emails (Fwd: in subject): 2 cases where gpt-oss returns
+  `uncertain` while both other models vote KEEP. Content is personal (real-estate
+  discussion, travel itinerary); the outer forward sender is automated. gpt-oss
+  appears to apply its automated-sender heuristic to the wrapper rather than the
+  payload. Correct label: KEEP.
+
+**Outlier-delete (possibly correct):**
+- 1 case: a financial institution account-verification email where gpt-oss alone
+  votes DELETE while gemma3 and qwen2.5 vote KEEP. Likely correct — this is an
+  account management notification, and gemma3's financial-record false-keep
+  pattern explains the opposing votes.
+
+#### qwen2.5:14b — under evaluation
+
+7 outlier votes — tied with gpt-oss:20b.
+
+**Persistent false-deletes (same failure mode as qwen2.5:7b):**
+- Platform-mediated personal message reply threads (home-exchange service): 2–3
+  cases. qwen2.5:14b continues to trigger an "automated platform relay" DELETE
+  heuristic on reply-thread notifications from platforms, despite the content
+  being a real person's reply. The 7B→14B upgrade did **not** fix this.
+- Professional email with minimal subject: 1 case (employer-domain test email).
+  Ambiguous — qwen may be pattern-matching on a single-word subject.
+- Professional link-share email: 1 case (colleague sharing a post). Correct
+  label: KEEP.
+
+**False-keeps:**
+- Fitness class reminder emails (studio booking platform): 2 cases. qwen2.5
+  votes KEEP — treating them as calendar appointments — while both other models
+  vote DELETE. Correct label: DELETE.
+- Service disconnection confirmation: 1 case. qwen2.5 treats it as an important
+  service document; others vote DELETE. Correct label likely DELETE.
 
 ---
 
@@ -167,18 +237,25 @@ All prompts in `python/prompts/`. Default is always the latest version.
 | v1.4.0 | OOO auto-replies (Automatic reply, Out of Office, OOO, Autosvar) added to DELETE. Boarding passes and travel documents added explicitly to KEEP. Category precedence NOTEs added (receipts/tickets/meetings override "automated transactional" DELETE). DocuSign @docusign.net domain named explicitly. *Regression: NOTEs ignored by llama3.1:8b.* |
 | v1.5.0 | Restructured: no-reply exceptions moved from DELETE NOTEs into KEEP list with explicit category examples (retailer receipts, event tickets, financial institution records). Forwarded personal messages (Fwd/Fw in subject) added to KEEP. GitHub PR rule simplified (removed qualifier that caused llama regression). Meeting invitation rule made sender-address-agnostic. |
 
-### Known remaining classification gaps (v1.5.0)
+### Known remaining classification gaps (v1.5.0 / Gen 4)
 
-- **Financial institution security alerts vs. financial records**: gemma3:12b
-  classifies account security/management notifications (contact-info updates,
-  account-change alerts) as financial records (KEEP). Likely correct label is
-  DELETE. Low priority — only 2–3 cases per 230-email sample.
-- **Platform-mediated personal messages via bulk relay**: llama3.1:8b
-  false-deleted these in Gen 3; unknown whether gpt-oss:20b handles them
-  correctly.
-- **qwen "automated content" heuristic**: unknown whether qwen2.5:14b carries
-  forward qwen2.5:7b's false-delete pattern on meeting invitations and employment
-  documents.
+- **gemma3:12b broadening false-keep pattern**: extends beyond financial
+  institution alerts (known from Gen 3) to e-commerce delivery notifications,
+  platform arrival countdowns, and community mailing list posts — all treated as
+  records worth keeping. 5 cases in 500 emails; wider than previously measured.
+- **gpt-oss:20b LinkedIn blind spot**: systematic false-keep on LinkedIn
+  connection-request emails (3 cases). Narrow category, fixable in v1.6.0 with
+  an explicit DELETE rule.
+- **gpt-oss:20b forwarded personal emails**: returns `uncertain` when forwarded
+  content is personal but the outer sender is automated (2 cases). The v1.5.0
+  `Fwd/Fw in subject → KEEP` rule is not firing for gpt-oss; needs strengthening.
+- **qwen2.5:14b platform-mediated personal messages**: the 7B→14B upgrade did
+  not fix the automated-relay false-delete. Reply-thread notifications from
+  home-exchange and similar services still trigger the DELETE heuristic. Primary
+  target for v1.6.0.
+- **qwen2.5:14b fitness/booking reminders**: 2 false-keeps treating class
+  reminder emails from booking platforms as calendar appointments. Fixable with
+  an explicit DELETE rule for transactional reminder emails.
 
 ---
 
@@ -200,4 +277,5 @@ All prompts in `python/prompts/`. Default is always the latest version.
 
 See `TODO.md` for the full list.
 
-- `gpt-oss:20b` — flagged for future consideration
+- `phi4-reasoning:14b` — full 14B may be viable if throughput improves; mini
+  variant retired at 3.8B due to ≤20 tok/s inference speed
