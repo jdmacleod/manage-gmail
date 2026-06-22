@@ -363,6 +363,94 @@ databases:
           LIMIT  100
 
       # -----------------------------------------------------------------------
+      # Inbox health
+      # -----------------------------------------------------------------------
+
+      inbox_age_buckets:
+        title: "Inbox debt by age bucket"
+        sql: |
+          SELECT
+            CASE
+              WHEN date_ts >= strftime('%s','now','-7 days')   THEN '1 – this week'
+              WHEN date_ts >= strftime('%s','now','-30 days')  THEN '2 – this month'
+              WHEN date_ts >= strftime('%s','now','-180 days') THEN '3 – 1–6 months'
+              WHEN date_ts >= strftime('%s','now','-365 days') THEN '4 – 6–12 months'
+              ELSE                                                   '5 – over a year'
+            END                       AS age_bucket,
+            COUNT(*)                  AS messages,
+            SUM(is_unread)            AS unread
+          FROM   messages
+          WHERE  in_inbox = 1
+          GROUP  BY age_bucket
+          ORDER  BY age_bucket
+
+      unread_by_sender:
+        title: "Unread messages per sender (newsletter hygiene)"
+        sql: |
+          SELECT
+            from_email,
+            from_name,
+            COUNT(*)                                          AS total_received,
+            SUM(is_unread)                                    AS unread,
+            printf('%.0f%%', SUM(is_unread)*100.0/COUNT(*))  AS unread_pct,
+            datetime(MAX(date_ts),'unixepoch')                AS last_message
+          FROM   messages
+          WHERE  (in_sent = 0 OR in_sent IS NULL)
+            AND  from_email IS NOT NULL
+          GROUP  BY from_email
+          HAVING unread > 0
+          ORDER  BY unread DESC
+          LIMIT  200
+
+      sender_domain_volume:
+        title: "Message volume by sender domain"
+        sql: |
+          SELECT
+            LOWER(SUBSTR(from_email, INSTR(from_email,'@')+1))  AS domain,
+            COUNT(DISTINCT from_email)                            AS distinct_addresses,
+            COUNT(*)                                              AS message_count,
+            SUM(is_unread)                                        AS unread,
+            datetime(MAX(date_ts),'unixepoch')                    AS last_message
+          FROM   messages
+          WHERE  from_email LIKE '%@%'
+          GROUP  BY domain
+          ORDER  BY message_count DESC
+          LIMIT  100
+
+      one_way_threads:
+        title: "Threads you never replied to (broadcast/prune candidates)"
+        sql: |
+          SELECT
+            r.thread_id,
+            COUNT(*)                                      AS received_count,
+            MAX(r.subject)                                AS subject,
+            r.from_email                                  AS primary_sender,
+            datetime(MAX(r.date_ts),'unixepoch')          AS last_received
+          FROM   messages r
+          WHERE  (r.in_sent = 0 OR r.in_sent IS NULL)
+            AND  r.thread_id IS NOT NULL
+            AND  r.thread_id NOT IN (
+                   SELECT DISTINCT thread_id FROM messages WHERE in_sent = 1
+                 )
+          GROUP  BY r.thread_id
+          ORDER  BY received_count DESC
+          LIMIT  200
+
+      monthly_unread_rate:
+        title: "Unread rate trend by month"
+        sql: |
+          SELECT
+            year_month,
+            COUNT(*)                                                  AS received,
+            SUM(is_unread)                                            AS unread,
+            printf('%.1f%%', SUM(is_unread)*100.0/COUNT(*))          AS unread_rate
+          FROM   messages
+          WHERE  year_month IS NOT NULL
+            AND  (in_sent = 0 OR in_sent IS NULL)
+          GROUP  BY year_month
+          ORDER  BY year_month DESC
+
+      # -----------------------------------------------------------------------
       # Import health
       # -----------------------------------------------------------------------
 
@@ -463,6 +551,107 @@ databases:
           ) c
           GROUP BY c.prompt_version
           ORDER BY c.prompt_version
+
+      ensemble_verdict:
+        title: "Ensemble verdict — unanimous keep / delete / uncertain"
+        sql: |
+          SELECT
+            prompt_version,
+            verdict,
+            COUNT(*)  AS messages,
+            printf('%.1f%%', COUNT(*)*100.0/SUM(COUNT(*)) OVER (PARTITION BY prompt_version)) AS pct
+          FROM (
+            SELECT
+              message_id,
+              prompt_version,
+              CASE
+                WHEN COUNT(DISTINCT label) = 1 AND MAX(label) = 'keep'      THEN 'unanimous keep'
+                WHEN COUNT(DISTINCT label) = 1 AND MAX(label) = 'delete'    THEN 'unanimous delete'
+                WHEN COUNT(DISTINCT label) = 1 AND MAX(label) = 'uncertain' THEN 'all uncertain'
+                ELSE 'disagreement'
+              END  AS verdict
+            FROM   classifications
+            GROUP  BY message_id, prompt_version
+          )
+          GROUP  BY prompt_version, verdict
+          ORDER  BY prompt_version, verdict
+
+      outlier_by_model:
+        title: "Outlier votes by model (which model disagrees most)"
+        sql: |
+          SELECT
+            c.prompt_version,
+            c.model,
+            COUNT(*)  AS outlier_votes
+          FROM   classifications c
+          JOIN (
+            SELECT message_id, prompt_version, COUNT(DISTINCT label) AS label_count
+            FROM   classifications
+            GROUP  BY message_id, prompt_version
+            HAVING label_count > 1
+          ) d ON c.message_id = d.message_id AND c.prompt_version = d.prompt_version
+          JOIN (
+            SELECT message_id, prompt_version, label AS majority_label
+            FROM   classifications
+            GROUP  BY message_id, prompt_version
+            HAVING COUNT(*) - COUNT(DISTINCT label) >= 1
+              AND  COUNT(label) - COUNT(DISTINCT label) > 0
+          ) m ON c.message_id = m.message_id AND c.prompt_version = m.prompt_version
+          WHERE  c.label != m.majority_label
+          GROUP  BY c.prompt_version, c.model
+          ORDER  BY c.prompt_version, outlier_votes DESC
+
+      high_confidence_disagreements:
+        title: "High-confidence disagreements (priority review queue)"
+        sql: |
+          -- Messages where models disagree AND at least one confidence >= 0.9.
+          -- Highest-value manual review: a confident wrong vote is the worst error.
+          SELECT
+            c.message_id,
+            c.prompt_version,
+            GROUP_CONCAT(c.model || ':' || c.label || '(' || ROUND(c.confidence,2) || ')', '  ')
+              AS votes,
+            MAX(c.confidence)  AS max_confidence
+          FROM   classifications c
+          JOIN (
+            SELECT message_id, prompt_version
+            FROM   classifications
+            GROUP  BY message_id, prompt_version
+            HAVING COUNT(DISTINCT label) > 1
+          ) d ON c.message_id = d.message_id AND c.prompt_version = d.prompt_version
+          GROUP  BY c.message_id, c.prompt_version
+          HAVING MAX(c.confidence) >= 0.9
+          ORDER  BY max_confidence DESC, c.prompt_version
+          LIMIT  200
+
+      confidence_distribution:
+        title: "Confidence score histogram by model and label"
+        sql: |
+          SELECT
+            model,
+            prompt_version,
+            label,
+            ROUND(CAST(CAST(confidence*10 AS INT) AS REAL)/10, 1)  AS confidence_bucket,
+            COUNT(*)                                                 AS count
+          FROM   classifications
+          GROUP  BY model, prompt_version, label, confidence_bucket
+          ORDER  BY model, prompt_version, label, confidence_bucket
+
+      label_drift_by_model:
+        title: "Per-model DELETE rate across prompt versions (regression check)"
+        sql: |
+          SELECT
+            model,
+            prompt_version,
+            COUNT(*)                                                                   AS total,
+            SUM(CASE WHEN label='delete'    THEN 1 ELSE 0 END)                        AS deletes,
+            SUM(CASE WHEN label='keep'      THEN 1 ELSE 0 END)                        AS keeps,
+            SUM(CASE WHEN label='uncertain' THEN 1 ELSE 0 END)                        AS uncertain,
+            printf('%.1f%%', SUM(CASE WHEN label='delete' THEN 1 ELSE 0 END)*100.0/COUNT(*))
+              AS delete_rate
+          FROM   classifications
+          GROUP  BY model, prompt_version
+          ORDER  BY model, prompt_version
 
       corrections_error_rate:
         title: "Prompt version error rate against human corrections"
